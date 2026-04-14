@@ -7,6 +7,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { execGhObserved } from "@aoagents/ao-core";
 import type {
   BatchObserver,
   CICheck,
@@ -19,6 +20,8 @@ import type {
 import { LRUCache } from "./lru-cache.js";
 
 let execFileAsync = promisify(execFile);
+let execGhAsync = async (args: string[], timeout: number, operation: string): Promise<string> =>
+  execGhObserved(args, { component: "scm-github-batch", operation }, timeout);
 
 /**
  * Set execFileAsync for testing.
@@ -26,6 +29,13 @@ let execFileAsync = promisify(execFile);
  */
 export function setExecFileAsync(fn: typeof execFileAsync): void {
   execFileAsync = fn;
+  execGhAsync = async (args: string[], timeout: number): Promise<string> => {
+    const { stdout } = await execFileAsync("gh", args, {
+      maxBuffer: 10 * 1024 * 1024,
+      timeout,
+    });
+    return stdout.trim();
+  };
 }
 
 /**
@@ -350,8 +360,7 @@ async function checkPRListETag(
   }
 
   try {
-    const { stdout } = await execFileAsync("gh", args, { timeout: 10_000 });
-    const output = stdout.trim();
+    const output = await execGhAsync(args, 10_000, "gh.api.guard-pr-list");
 
     // Check for HTTP 304 Not Modified response
     if (output.includes("HTTP/1.1 304") || output.includes("HTTP/2 304")) {
@@ -409,8 +418,7 @@ async function checkCommitStatusETag(
   }
 
   try {
-    const { stdout } = await execFileAsync("gh", args, { timeout: 10_000 });
-    const output = stdout.trim();
+    const output = await execGhAsync(args, 10_000, "gh.api.guard-commit-status");
 
     // Check for HTTP 304 Not Modified response
     if (output.includes("HTTP/1.1 304") || output.includes("HTTP/2 304")) {
@@ -574,10 +582,7 @@ async function executeBatchQuery(
   const batchSize = prs.length;
   const adaptiveTimeout = 30_000 + Math.max(0, (batchSize - 10) * 2000);
 
-  const { stdout } = await execFileAsync("gh", args, {
-    maxBuffer: 10 * 1024 * 1024,
-    timeout: adaptiveTimeout,
-  });
+  const stdout = await execGhAsync(args, adaptiveTimeout, "gh.api.graphql-batch");
 
   const result: {
     data?: Record<string, unknown>;

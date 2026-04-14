@@ -4,8 +4,6 @@
  * Uses the `gh` CLI for all GitHub API interactions.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type {
   PluginModule,
   Tracker,
@@ -15,8 +13,7 @@ import type {
   CreateIssueInput,
   ProjectConfig,
 } from "@aoagents/ao-core";
-
-const execFileAsync = promisify(execFile);
+import { execGhObserved } from "@aoagents/ao-core";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,11 +21,7 @@ const execFileAsync = promisify(execFile);
 
 async function gh(args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("gh", args, {
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 30_000,
-    });
-    return stdout.trim();
+    return await execGhObserved(args, { component: "tracker-github" }, 30_000);
   } catch (err) {
     throw new Error(`gh ${args.slice(0, 3).join(" ")} failed: ${(err as Error).message}`, {
       cause: err,

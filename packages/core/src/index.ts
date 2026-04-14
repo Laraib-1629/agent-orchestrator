@@ -108,6 +108,7 @@ export {
   createProjectObserver,
   readObservabilitySummary,
 } from "./observability.js";
+export { execGhObserved, getGhTraceFilePath } from "./gh-trace.js";
 export { resolveNotifierTarget } from "./notifier-resolution.js";
 export type {
   ObservabilityMetricName,
@@ -116,6 +117,7 @@ export type {
   ObservabilitySummary,
   ProjectObserver,
 } from "./observability.js";
+export type { GhTraceContext, GhTraceEntry } from "./gh-trace.js";
 
 // Feedback tools — contracts, validation, and report storage
 export {

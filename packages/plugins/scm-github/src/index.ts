@@ -9,6 +9,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import {
   CI_STATUS,
+  execGhObserved,
   type PluginModule,
   type SCM,
   type SCMWebhookEvent,
@@ -77,11 +78,11 @@ async function execCli(bin: ExecCommand, args: string[], cwd?: string): Promise<
 }
 
 async function gh(args: string[]): Promise<string> {
-  return execCli("gh", args);
+  return execGhObserved(args, { component: "scm-github" }, 30_000);
 }
 
 async function ghInDir(args: string[], cwd: string): Promise<string> {
-  return execCli("gh", args, cwd);
+  return execGhObserved(args, { component: "scm-github", cwd }, 30_000);
 }
 
 async function git(args: string[], cwd: string): Promise<string> {
