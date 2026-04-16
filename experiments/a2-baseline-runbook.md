@@ -1,7 +1,7 @@
 # A2 Baseline Runbook
 
 **Purpose:** Practical execution plan for the Phase A2 scenario x scale x topology matrix.
-**Prereq:** A1b blockers 1-4 closed, clean rerun validates tracer visibility.
+**Prereq:** A1b blockers 1-4 closed, clean rerun validates tracer visibility. Blocker 5 (`sessionId`/`projectId` threading) must also land before running per-session cells (S2 at scale >1, S3, S4) — without it, per-session attribution is not measurable and the "per-session polling floor" claims in the baseline are not backed by data.
 **Output:** `experiments/baseline.md` — the single artifact that gates Track B.
 
 ---
@@ -26,13 +26,13 @@ Every A2 run must stay inside a single rate-limit reset window (~60 min, resets 
 Before and after each run, capture a `/rate_limit` snapshot to bracket the coarse subcommand burn (Gap 1 — CLI subcommands are opaque to the tracer):
 
 ```bash
-# Before run
-gh api /rate_limit --jq '.resources.core' > experiments/out/rate-limit-before.json
-date -u +%Y-%m-%dT%H:%M:%SZ >> experiments/out/rate-limit-before.json
+# Before run — produces valid JSON with embedded timestamp
+gh api /rate_limit --jq '{ core: .resources.core, captured_at: now | todate }' \
+  > experiments/out/rate-limit-before.json
 
 # After run
-gh api /rate_limit --jq '.resources.core' > experiments/out/rate-limit-after.json
-date -u +%Y-%m-%dT%H:%M:%SZ >> experiments/out/rate-limit-after.json
+gh api /rate_limit --jq '{ core: .resources.core, captured_at: now | todate }' \
+  > experiments/out/rate-limit-after.json
 ```
 
 ### Test repos
@@ -80,15 +80,17 @@ Pruning rule from PLAN.md: run full matrix once, keep only cells that show meani
 
 **Priority cells (run first):**
 
-| Cell | Why |
-|------|-----|
-| S2-T1-1 | Single-session polling floor. Everything else is measured relative to this. |
-| S2-T1-5 | Does cost scale linearly with sessions? |
-| S2-T1-50 | Target capacity steady state. THE critical cell. |
-| S2-T2-50 | Spread vs concentrated at target. Shows detectPR fan-out impact. |
-| S1-T1-50 | Cold start at target. Shows cache-miss storm severity. |
-| S3-T1-25 | Spawn storm. Shows burst shape. |
-| S4-T1-10 | Review burst. Shows reaction-path cost. |
+| Cell | Why | Needs blocker 5? |
+|------|-----|-------------------|
+| S2-T1-1 | Single-session polling floor. Everything else is measured relative to this. | No (1 session) |
+| S2-T1-5 | Does cost scale linearly with sessions? | **Yes** (per-session split) |
+| S2-T1-50 | Target capacity steady state. THE critical cell. | **Yes** (per-session split) |
+| S2-T2-50 | Spread vs concentrated at target. Shows detectPR fan-out impact. | **Yes** (per-session split) |
+| S1-T1-50 | Cold start at target. Shows cache-miss storm severity. | **Yes** (per-session split) |
+| S3-T1-25 | Spawn storm. Shows burst shape. | **Yes** (per-session split) |
+| S4-T1-10 | Review burst. Shows reaction-path cost. | **Yes** (per-session split) |
+
+Only S2-T1-1 (single session) produces meaningful per-session data without blocker 5. All multi-session cells can still measure **total** burn and scorecard metrics, but cannot attribute cost per session.
 
 ---
 
@@ -104,7 +106,8 @@ export AO_GH_TRACE_FILE="$PWD/experiments/out/a2-${SCENARIO}-${TOPO}-${SCALE}-$(
 # (specific config varies per topology)
 
 # Bracket: capture /rate_limit before
-gh api /rate_limit --jq '.resources.core' | tee experiments/out/rl-before-${SCENARIO}-${TOPO}-${SCALE}.json
+gh api /rate_limit --jq '{ core: .resources.core, captured_at: now | todate }' \
+  | tee experiments/out/rl-before-${SCENARIO}-${TOPO}-${SCALE}.json
 ```
 
 ### 2. Run
@@ -127,7 +130,8 @@ ao stop <projectId>
 
 ```bash
 # Bracket: capture /rate_limit after
-gh api /rate_limit --jq '.resources.core' | tee experiments/out/rl-after-${SCENARIO}-${TOPO}-${SCALE}.json
+gh api /rate_limit --jq '{ core: .resources.core, captured_at: now | todate }' \
+  | tee experiments/out/rl-after-${SCENARIO}-${TOPO}-${SCALE}.json
 
 # Summarize
 node experiments/summarize-gh-trace.mjs "$AO_GH_TRACE_FILE"

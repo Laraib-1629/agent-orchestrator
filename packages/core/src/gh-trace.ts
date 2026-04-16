@@ -82,7 +82,11 @@ function extractOperation(args: string[]): string {
       }
       continue;
     }
-    return `gh.${args[0]}.${arg}`;
+    // For REST URL paths like "repos/acme/repo/pulls/123/comments?...",
+    // extract only the first path segment to keep cardinality bounded.
+    // "graphql" stays as-is; "repos/..." becomes "repos"; "user" stays "user".
+    const firstSegment = arg.split("/")[0].split("?")[0];
+    return `gh.${args[0]}.${firstSegment}`;
   }
   return `gh.${args[0]}`;
 }
@@ -172,7 +176,7 @@ function buildTraceEntry(
   result: GhTraceResult,
   durationMs: number,
 ): GhTraceEntry {
-  const { statusLine, headers } = parseIncludedHttpResponse(result.stdout);
+  const { statusLine, headers } = parseIncludedHttpResponse(result.stdout ?? "");
   const httpStatus = statusLine
     ? Number.parseInt(statusLine.replace(/^HTTP\/[0-9.]+\s+/, "").split(" ")[0] ?? "", 10)
     : undefined;
@@ -191,8 +195,8 @@ function buildTraceEntry(
     exitCode: result.exitCode,
     signal: result.signal,
     durationMs,
-    stdoutBytes: Buffer.byteLength(result.stdout, "utf-8"),
-    stderrBytes: Buffer.byteLength(result.stderr, "utf-8"),
+    stdoutBytes: Buffer.byteLength(result.stdout ?? "", "utf-8"),
+    stderrBytes: Buffer.byteLength(result.stderr ?? "", "utf-8"),
     statusLine,
     httpStatus: Number.isFinite(httpStatus) ? httpStatus : undefined,
     etag: headers["etag"],
