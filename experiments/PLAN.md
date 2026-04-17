@@ -78,19 +78,29 @@ Bursts of `N = 20, 60, 120, 200` via `gh api /user` in parallel and `N = 150` vi
 
 The most important structural change from v1: **the baseline recorder (Track A) and any behavior-changing work (Track B) are strictly separated.** Track A ships first, unchanged behavior, just instrumentation. Only after we have baseline numbers does Track B start landing fixes.
 
-### Progress & Status (updated 2026-04-16)
+### Progress & Status (updated 2026-04-17)
 
 **Tracks are strictly sequential:** A → B → C. Each track depends on the previous track's output.
 
 ```
 Track A ── Measure ──────────────────────────────────────────────────────
   A1a  Ship execGhObserved() + JSONL recorder        ✅ Done (PR #1238)
-  A1b  Fix tracer blind spots (5 blockers)            🔄 In progress
-  A2   Baseline scenario × scale × topology matrix    ⏳ Blocked on A1b
+  A1b  Fix tracer blind spots (5 blockers)            ✅ Done (blockers 1-4 fixed, #5 deferred)
+  A2   Benchmark harness + baseline data              ✅ Done — harness built, 5-session baseline captured
+       Scorecard: experiments/out/scorecard-quiet-steady.single-repo.5-*.json
 
 Track B ── Fix bugs ─────────────────────────────────────────────────────
-  B1   Safe behavioral fixes (304, status parsing)    ⏳ Blocked on A2 baseline
-  B2   Structural reductions (detectPR dedup, batch)  ⏳ Blocked on B1
+  B1   Safe behavioral fixes (304, status parsing)    ✅ Done (cd0b16ca, pushed, PR #1238)
+       — ETag 304-as-error fix in graphql-batch.ts
+       — is304() + extractErrorOutput() helpers
+       — rateLimit { cost remaining resetAt } added to batch query
+       — Verified: 100% guard 304 rate, 0 graphql-batch calls in quiet-steady
+       — Awaiting Adil's independent verification (PR comment posted)
+  B2   Structural reductions (detectPR dedup, batch)  ⏳ Blocked on B1 verification
+  B3   Scale-up validation (10, 20 sessions)          ✅ Done — sub-linear scaling confirmed
+       5→260, 10→640, 20→680 GraphQL pts/hr
+       50-session projection: ~800-1000 pts/hr (16-20% budget)
+       B2 structural reductions NOT required for quiet-steady
 
 Track C ── Octokit migration (optional) ─────────────────────────────────
   C1   OctokitRunner behind flag + compare            ⏳ Blocked on B scorecard
