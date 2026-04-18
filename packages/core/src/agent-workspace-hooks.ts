@@ -32,7 +32,7 @@ function getAoBinDir(): string {
 }
 
 /** Current version of wrapper scripts — bump when scripts change */
-const WRAPPER_VERSION = "0.2.0";
+const WRAPPER_VERSION = "0.2.1";
 
 // =============================================================================
 // PATH Builder
@@ -166,6 +166,41 @@ fi
 
 # Source the metadata helper
 source "\$ao_bin_dir/ao-metadata-helper.sh" 2>/dev/null || true
+
+# Best-effort JSONL tracing for agent-side gh invocations.
+log_gh_invocation() {
+  local trace_file="\${AO_AGENT_GH_TRACE:-}"
+  [[ -z "\$trace_file" ]] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  mkdir -p "\$(dirname "\$trace_file")" 2>/dev/null || return 0
+
+  jq -nc \
+    --arg timestamp "\$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg cwd "\$PWD" \
+    --arg aoSession "\${AO_SESSION:-}" \
+    --arg aoSessionName "\${AO_SESSION_NAME:-}" \
+    --arg aoProjectId "\${AO_PROJECT_ID:-}" \
+    --arg aoIssueId "\${AO_ISSUE_ID:-}" \
+    --arg aoCallerType "\${AO_CALLER_TYPE:-}" \
+    --arg pid "\$\$" \
+    --arg wrapperVersion "${WRAPPER_VERSION}" \
+    --args "\$@" \
+    '{
+      timestamp: $timestamp,
+      cwd: $cwd,
+      args: $ARGS.positional,
+      aoSession: (if $aoSession == "" then null else $aoSession end),
+      aoSessionName: (if $aoSessionName == "" then null else $aoSessionName end),
+      aoProjectId: (if $aoProjectId == "" then null else $aoProjectId end),
+      aoIssueId: (if $aoIssueId == "" then null else $aoIssueId end),
+      aoCallerType: (if $aoCallerType == "" then null else $aoCallerType end),
+      pid: ($pid | tonumber),
+      wrapperVersion: $wrapperVersion
+    }' >> "\$trace_file" 2>/dev/null || true
+}
+
+log_gh_invocation "\$@"
 
 # Only capture output for commands we need to parse (pr/create, pr/merge).
 # All other commands pass through transparently without stream merging.
