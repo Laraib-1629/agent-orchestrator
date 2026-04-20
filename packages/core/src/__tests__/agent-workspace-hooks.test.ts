@@ -79,7 +79,7 @@ describe("setupPathWrapperWorkspace", () => {
 
   it("skips wrapper rewrite when version matches", async () => {
     mockReadFile
-      .mockResolvedValueOnce("0.4.0") // version marker matches
+      .mockResolvedValueOnce("0.4.1") // version marker matches
       .mockRejectedValueOnce(new Error("ENOENT")); // AGENTS.md doesn't exist
 
     await setupPathWrapperWorkspace("/workspace");
@@ -185,6 +185,16 @@ describe("GH_WRAPPER", () => {
   });
 
   it("uses current wrapper version in trace logging", () => {
-    expect(GH_WRAPPER).toContain("0.4.0");
+    expect(GH_WRAPPER).toContain("0.4.1");
+  });
+
+  it("logs cache outcomes (hit/miss-stored/miss-negative/miss-error) to trace", () => {
+    expect(GH_WRAPPER).toContain("log_ao_cache");
+    expect(GH_WRAPPER).toContain('"hit"');
+    expect(GH_WRAPPER).toContain('"miss-stored"');
+    expect(GH_WRAPPER).toContain('"miss-negative"');
+    expect(GH_WRAPPER).toContain('"miss-error"');
+    expect(GH_WRAPPER).toContain("cacheResult");
+    expect(GH_WRAPPER).toContain("cacheKey");
   });
 });

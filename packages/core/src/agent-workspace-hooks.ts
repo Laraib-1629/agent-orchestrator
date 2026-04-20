@@ -34,7 +34,7 @@ function getAoBinDir(): string {
 }
 
 /** Current version of wrapper scripts — bump when scripts change */
-const WRAPPER_VERSION = "0.4.0";
+const WRAPPER_VERSION = "0.4.1";
 
 // =============================================================================
 // PATH Builder
@@ -286,6 +286,17 @@ log_gh_invocation() {
 
 log_gh_invocation "\$@"
 
+# Best-effort cache-outcome tracing (appends to same JSONL trace file).
+# result: hit | miss-stored | miss-negative | miss-error | passthrough
+log_ao_cache() {
+  local result="\$1" cache_key="\$2"
+  local trace_file="\${AO_AGENT_GH_TRACE:-}"
+  [[ -z "\$trace_file" ]] && return 0
+  printf '{"timestamp":"%s","cacheResult":"%s","cacheKey":"%s","pid":%s}\\n' \
+    "\$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "\$result" "\$cache_key" "\$\$" \
+    >> "\$trace_file" 2>/dev/null || true
+}
+
 # =============================================================================
 # Cacheable reads
 # =============================================================================
@@ -314,6 +325,7 @@ if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
     _ao_cache_key="pr-discovery-\${_ao_safe_branch}"
 
     if ao_cache_fresh "\$_ao_cache_key" 0 2>/dev/null; then
+      log_ao_cache "hit" "\$_ao_cache_key"
       ao_cache_read "\$_ao_cache_key"
       exit 0
     fi
@@ -330,7 +342,12 @@ if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
       # Only cache non-empty positive results
       if [[ -n "\$_ao_trimmed" && "\$_ao_trimmed" != "[]" ]]; then
         printf '%s' "\$_ao_out" | ao_cache_write "\$_ao_cache_key" 2>/dev/null || true
+        log_ao_cache "miss-stored" "\$_ao_cache_key"
+      else
+        log_ao_cache "miss-negative" "\$_ao_cache_key"
       fi
+    else
+      log_ao_cache "miss-error" "\$_ao_cache_key"
     fi
     exit \$_ao_exit
   fi
@@ -362,6 +379,7 @@ if [[ "\$1" == "issue" && "\$2" == "view" ]]; then
     _ao_cache_key="issue-ctx-\${_ao_issue_id}"
 
     if ao_cache_fresh "\$_ao_cache_key" 300 2>/dev/null; then
+      log_ao_cache "hit" "\$_ao_cache_key"
       ao_cache_read "\$_ao_cache_key"
       exit 0
     fi
@@ -373,6 +391,9 @@ if [[ "\$1" == "issue" && "\$2" == "view" ]]; then
     cat "\$_ao_tmpout"
     if [[ \$_ao_exit -eq 0 ]]; then
       cat "\$_ao_tmpout" | ao_cache_write "\$_ao_cache_key" 2>/dev/null || true
+      log_ao_cache "miss-stored" "\$_ao_cache_key"
+    else
+      log_ao_cache "miss-error" "\$_ao_cache_key"
     fi
     exit \$_ao_exit
   fi
