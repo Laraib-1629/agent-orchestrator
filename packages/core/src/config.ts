@@ -409,7 +409,7 @@ function generateTempPluginName(pkg?: string, path?: string): string {
     const packageName = slashParts[slashParts.length - 1] ?? pkg;
 
     // Extract plugin name after ao-plugin-{slot}- prefix, preserving multi-word names like "jira-cloud"
-    const prefixMatch = packageName.match(/^ao-plugin-(?:runtime|agent|workspace|tracker|scm|notifier|terminal)-(.+)$/);
+    const prefixMatch = packageName.match(/^ao-plugin-(?:runtime|agent|workspace|tracker|scm|notifier)-(.+)$/);
     if (prefixMatch?.[1]) {
       return prefixMatch[1];
     }

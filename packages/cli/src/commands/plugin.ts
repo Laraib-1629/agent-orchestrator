@@ -350,7 +350,7 @@ export function registerPlugin(program: Command): void {
     .description("Scaffold a new AO plugin package")
     .argument("[directory]", "Target directory for the new plugin")
     .option("--name <name>", "Display/plugin name")
-    .option("--slot <slot>", "Plugin slot: runtime | agent | workspace | tracker | scm | notifier | terminal")
+    .option("--slot <slot>", "Plugin slot: runtime | agent | workspace | tracker | scm | notifier")
     .option("--description <description>", "Short plugin description")
     .option("--author <author>", "Package author")
     .option("--package-name <packageName>", "npm package name")
@@ -374,7 +374,6 @@ export function registerPlugin(program: Command): void {
           "tracker",
           "scm",
           "notifier",
-          "terminal",
         ];
         const isInteractive = process.stdin.isTTY && opts.nonInteractive !== true;
         let name = opts.name;
