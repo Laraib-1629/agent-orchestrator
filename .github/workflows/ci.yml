@@ -27,7 +27,6 @@ jobs:
   knip:
     name: Knip (unused exports — advisory)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -36,7 +35,8 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm knip
+      - name: Run knip (advisory — never fails the build)
+        run: pnpm knip || true
 
   typecheck:
     name: Typecheck
