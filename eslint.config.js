@@ -67,16 +67,86 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
       "@typescript-eslint/no-non-null-assertion": "warn",
       "@typescript-eslint/no-require-imports": "error",
+
+      // C-04: enforce 400-line cap on component/source files (CLAUDE.md constraint)
+      "max-lines": ["error", { max: 400, skipBlankLines: true, skipComments: true }],
     },
   },
 
-  // Relaxed rules for test files
+  // Relaxed rules for test files — fixtures legitimately grow large
   {
-    files: ["**/*.test.ts", "**/__tests__/**"],
+    files: ["**/*.test.ts", "**/*.test.tsx", "**/__tests__/**"],
     rules: {
       "no-console": "off",
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
+      "max-lines": "off",
+    },
+  },
+
+  // C-04 migration ratchet: existing offenders grandfathered in.
+  // This list is a visible, auditable TODO — removing an entry is part of the
+  // acceptance criteria for the matching split PR. New code must stay ≤400 lines.
+  //
+  // Tracked by open split issues:
+  //   packages/core/src/session-manager.ts          → #1415
+  //   packages/core/src/lifecycle-manager.ts        → #1417
+  //   packages/cli/src/commands/start.ts            → #1416
+  //   packages/plugins/scm-github/src/index.ts      → #1418
+  //   packages/plugins/scm-github/src/graphql-batch.ts → #1418
+  //   packages/web/src/components/SessionDetail.tsx → #770
+  //   packages/web/src/components/DirectTerminal.tsx → #769
+  //
+  // Remaining offenders (no split issue yet — good candidates for future refactors):
+  //   packages/core/src/{types,config,global-config,agent-report,observability,lifecycle-state}.ts
+  //   packages/cli/src/commands/{plugin,setup,status}.ts
+  //   packages/plugins/{agent-claude-code,agent-codex,scm-gitlab,tracker-linear}/src/index.ts
+  //   packages/web/server/mux-websocket.ts
+  //   packages/web/src/app/{dev/terminal-test/page,sessions/[id]/page}.tsx
+  //   packages/web/src/components/{Dashboard,SessionCard,ProjectSidebar}.tsx
+  //   packages/web/src/lib/{serialize,types}.ts
+  //   openclaw-plugin/index.ts
+  //
+  // Patterns use a `**/` prefix so they match under both the root config
+  // and `packages/web/eslint.config.js` (which extends root) — flat config
+  // `files` globs are resolved relative to the config file that declares them.
+  {
+    files: [
+      // Known offenders with open split issues
+      "**/packages/core/src/session-manager.ts",
+      "**/packages/core/src/lifecycle-manager.ts",
+      "**/packages/cli/src/commands/start.ts",
+      "**/packages/plugins/scm-github/src/index.ts",
+      "**/packages/plugins/scm-github/src/graphql-batch.ts",
+      "**/src/components/SessionDetail.tsx",
+      "**/src/components/DirectTerminal.tsx",
+
+      // Other existing offenders (grandfathered — no split issue yet)
+      "**/packages/core/src/types.ts",
+      "**/packages/core/src/config.ts",
+      "**/packages/core/src/global-config.ts",
+      "**/packages/core/src/agent-report.ts",
+      "**/packages/core/src/observability.ts",
+      "**/packages/core/src/lifecycle-state.ts",
+      "**/packages/cli/src/commands/plugin.ts",
+      "**/packages/cli/src/commands/setup.ts",
+      "**/packages/cli/src/commands/status.ts",
+      "**/packages/plugins/agent-claude-code/src/index.ts",
+      "**/packages/plugins/agent-codex/src/index.ts",
+      "**/packages/plugins/scm-gitlab/src/index.ts",
+      "**/packages/plugins/tracker-linear/src/index.ts",
+      "**/server/mux-websocket.ts",
+      "**/src/app/dev/terminal-test/page.tsx",
+      "**/src/app/sessions/[[]id[]]/page.tsx", // [id] escaped — brackets are glob character classes
+      "**/src/components/Dashboard.tsx",
+      "**/src/components/SessionCard.tsx",
+      "**/src/components/ProjectSidebar.tsx",
+      "**/src/lib/serialize.ts",
+      "**/src/lib/types.ts",
+      "**/openclaw-plugin/index.ts",
+    ],
+    rules: {
+      "max-lines": "off",
     },
   },
 
