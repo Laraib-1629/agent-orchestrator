@@ -12,8 +12,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @aoagents/ao-web dev",
-    "lint": "eslint .",
+    "lint": "eslint . && pnpm check:deprecated",
     "lint:fix": "eslint . --fix",
+    "check:deprecated": "node scripts/check-deprecated.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r typecheck",
