@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useEffect, useRef } from "react";
+import { memo, useState } from "react";
 import {
   type DashboardSession,
   getAttentionLevel,
@@ -15,6 +15,7 @@ import {
   isDashboardSessionTerminal,
   isDashboardSessionRestorable,
 } from "@/lib/types";
+import { useAsyncActionMap } from "@/hooks/useAsyncAction";
 import { cn } from "@/lib/cn";
 import { getSessionTitle } from "@/lib/format";
 import { CICheckList } from "./CIBadge";
@@ -118,35 +119,29 @@ function getDoneStatusInfo(session: DashboardSession): {
 
 function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: SessionCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [sendingAction, setSendingAction] = useState<string | null>(null);
-  const [failedAction, setFailedAction] = useState<string | null>(null);
-  const [sendingQuickReply, setSendingQuickReply] = useState<string | null>(null);
-  const [sentQuickReply, setSentQuickReply] = useState<string | null>(null);
   const [killConfirming, setKillConfirming] = useState(false);
   const [replyText, setReplyText] = useState("");
-  const actionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const quickReplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = getAttentionLevel(session);
   const pr = session.pr;
 
+  const quickReply = useAsyncActionMap<[string]>(
+    async (message) => {
+      await Promise.resolve(onSend?.(session.id, message));
+    },
+    { sentMs: 2000, errorMs: 2000 },
+  );
+
+  const actionFlash = useAsyncActionMap<[string]>(
+    async (message) => {
+      await Promise.resolve(onSend?.(session.id, message));
+    },
+    { sentMs: 2000, errorMs: 2000 },
+  );
+
   const handleQuickReply = async (message: string): Promise<boolean> => {
-    const trimmedMessage = message.trim();
-    if (!trimmedMessage || sendingQuickReply !== null) return false;
-
-    setSendingQuickReply(trimmedMessage);
-    setSentQuickReply(null);
-
-    try {
-      await Promise.resolve(onSend?.(session.id, trimmedMessage));
-      setSentQuickReply(trimmedMessage);
-      if (quickReplyTimerRef.current) clearTimeout(quickReplyTimerRef.current);
-      quickReplyTimerRef.current = setTimeout(() => setSentQuickReply(null), 2000);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      setSendingQuickReply(null);
-    }
+    const trimmed = message.trim();
+    if (!trimmed || quickReply.anySending) return false;
+    return quickReply.run(trimmed, trimmed);
   };
 
   const handleReplyKeyDown = async (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -157,28 +152,9 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
     }
   };
 
-  useEffect(() => {
-    return () => {
-      if (actionTimerRef.current) clearTimeout(actionTimerRef.current);
-      if (quickReplyTimerRef.current) clearTimeout(quickReplyTimerRef.current);
-    };
-  }, []);
-
-  const handleAction = async (action: string, message: string) => {
-    if (sendingAction !== null) return;
-
-    setSendingAction(action);
-    setFailedAction(null);
-    try {
-      await Promise.resolve(onSend?.(session.id, message));
-      if (actionTimerRef.current) clearTimeout(actionTimerRef.current);
-      actionTimerRef.current = setTimeout(() => setSendingAction(null), 2000);
-    } catch {
-      setSendingAction(null);
-      setFailedAction(action);
-      if (actionTimerRef.current) clearTimeout(actionTimerRef.current);
-      actionTimerRef.current = setTimeout(() => setFailedAction(null), 2000);
-    }
+  const handleAction = (action: string, message: string) => {
+    if (actionFlash.anySending) return;
+    void actionFlash.run(action, message);
   };
 
   const rateLimited = pr ? isPRRateLimited(pr) : false;
@@ -675,22 +651,25 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
                     </span>
                   )}
                 </span>
-                {alert.actionLabel && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleAction(alert.key, alert.actionMessage ?? "");
-                    }}
-                    disabled={sendingAction === alert.key}
-                    className="alert-row__action"
-                  >
-                    {sendingAction === alert.key
-                      ? "sent!"
-                      : failedAction === alert.key
-                        ? "failed"
-                        : alert.actionLabel}
-                  </button>
-                )}
+                {alert.actionLabel && (() => {
+                  const s = actionFlash.getState(alert.key);
+                  return (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAction(alert.key, alert.actionMessage ?? "");
+                      }}
+                      disabled={s.sending}
+                      className="alert-row__action"
+                    >
+                      {s.sending || s.sent
+                        ? "sent!"
+                        : s.error !== null
+                          ? "failed"
+                          : alert.actionLabel}
+                    </button>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -714,44 +693,25 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
               View current context →
             </a>
             <div className="card__presets">
-              <button
-                className="card__preset"
-                onClick={() => void handleQuickReply("continue")}
-                disabled={sendingQuickReply !== null}
-              >
-                {sendingQuickReply === "continue"
-                  ? "Sending..."
-                  : sentQuickReply === "continue"
-                    ? "Sent"
-                    : "Continue"}
-              </button>
-              <button
-                className="card__preset"
-                onClick={() => void handleQuickReply("abort")}
-                disabled={sendingQuickReply !== null}
-              >
-                {sendingQuickReply === "abort"
-                  ? "Sending..."
-                  : sentQuickReply === "abort"
-                    ? "Sent"
-                    : "Abort"}
-              </button>
-              <button
-                className="card__preset"
-                onClick={() => void handleQuickReply("skip")}
-                disabled={sendingQuickReply !== null}
-              >
-                {sendingQuickReply === "skip"
-                  ? "Sending..."
-                  : sentQuickReply === "skip"
-                    ? "Sent"
-                    : "Skip"}
-              </button>
+              {(["continue", "abort", "skip"] as const).map((preset) => {
+                const s = quickReply.getState(preset);
+                const label = preset.charAt(0).toUpperCase() + preset.slice(1);
+                return (
+                  <button
+                    key={preset}
+                    className="card__preset"
+                    onClick={() => void handleQuickReply(preset)}
+                    disabled={quickReply.anySending}
+                  >
+                    {s.sending ? "Sending..." : s.sent ? "Sent" : label}
+                  </button>
+                );
+              })}
             </div>
             <div className="card__reply-wrap">
               <textarea
                 className="card__reply"
-                placeholder={sendingQuickReply !== null ? "Sending..." : "Type a reply... (Enter to send)"}
+                placeholder={quickReply.anySending ? "Sending..." : "Type a reply... (Enter to send)"}
                 aria-label="Type a reply to the agent"
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
@@ -759,7 +719,7 @@ function SessionCardView({ session, onSend, onKill, onMerge, onRestore }: Sessio
                   void handleReplyKeyDown(e);
                 }}
                 rows={1}
-                disabled={sendingQuickReply !== null}
+                disabled={quickReply.anySending}
               />
             </div>
           </div>

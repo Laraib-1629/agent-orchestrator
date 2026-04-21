@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMediaQuery, MOBILE_BREAKPOINT } from "@/hooks/useMediaQuery";
+import { useAsyncActionMap } from "@/hooks/useAsyncAction";
 import {
   type DashboardSession,
   type DashboardPR,
@@ -203,23 +204,15 @@ function OrchestratorTopStrip({
 async function askAgentToFix(
   sessionId: string,
   comment: { url: string; path: string; body: string },
-  onSuccess: () => void,
-  onError: () => void,
 ) {
-  try {
-    const { title, description } = cleanBugbotComment(comment.body);
-    const message = `Please address this review comment:\n\nFile: ${comment.path}\nComment: ${title}\nDescription: ${description}\n\nComment URL: ${comment.url}\n\nAfter fixing, mark the comment as resolved at ${comment.url}`;
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/message`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    onSuccess();
-  } catch (err) {
-    console.error("Failed to send message to agent:", err);
-    onError();
-  }
+  const { title, description } = cleanBugbotComment(comment.body);
+  const message = `Please address this review comment:\n\nFile: ${comment.path}\nComment: ${title}\nDescription: ${description}\n\nComment URL: ${comment.url}\n\nAfter fixing, mark the comment as resolved at ${comment.url}`;
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 // ── Orchestrator status strip ─────────────────────────────────────────
@@ -730,75 +723,21 @@ export function SessionDetail({
 // ── Session detail PR card ────────────────────────────────────────────
 
 function SessionDetailPRCard({ pr, sessionId, metadata }: { pr: DashboardPR; sessionId: string; metadata: Record<string, string> }) {
-  const [sendingComments, setSendingComments] = useState<Set<string>>(new Set());
-  const [sentComments, setSentComments] = useState<Set<string>>(new Set());
-  const [errorComments, setErrorComments] = useState<Set<string>>(new Set());
   const [branchCopied, setBranchCopied] = useState(false);
-  const timersRef = useRef<Map<string, number>>(new Map());
+  const copyTimerRef = useRef<number | null>(null);
+
+  const fixAction = useAsyncActionMap<[{ url: string; path: string; body: string }]>(
+    async (comment) => {
+      await askAgentToFix(sessionId, comment);
+    },
+    { sentMs: 3000, errorMs: 3000 },
+  );
 
   useEffect(() => {
     return () => {
-      timersRef.current.forEach((timer) => window.clearTimeout(timer));
-      timersRef.current.clear();
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
     };
   }, []);
-
-  const handleAskAgentToFix = async (comment: { url: string; path: string; body: string }) => {
-    setSentComments((prev) => {
-      const next = new Set(prev);
-      next.delete(comment.url);
-      return next;
-    });
-    setErrorComments((prev) => {
-      const next = new Set(prev);
-      next.delete(comment.url);
-      return next;
-    });
-    setSendingComments((prev) => new Set(prev).add(comment.url));
-
-    await askAgentToFix(
-      sessionId,
-      comment,
-      () => {
-        setSendingComments((prev) => {
-          const next = new Set(prev);
-          next.delete(comment.url);
-          return next;
-        });
-        setSentComments((prev) => new Set(prev).add(comment.url));
-        const existing = timersRef.current.get(comment.url);
-        if (existing !== undefined) window.clearTimeout(existing);
-        const timer = window.setTimeout(() => {
-          setSentComments((prev) => {
-            const next = new Set(prev);
-            next.delete(comment.url);
-            return next;
-          });
-          timersRef.current.delete(comment.url);
-        }, 3000);
-        timersRef.current.set(comment.url, timer);
-      },
-      () => {
-        setSendingComments((prev) => {
-          const next = new Set(prev);
-          next.delete(comment.url);
-          return next;
-        });
-        setErrorComments((prev) => new Set(prev).add(comment.url));
-        const existing = timersRef.current.get(comment.url);
-        if (existing !== undefined) window.clearTimeout(existing);
-        const timer = window.setTimeout(() => {
-          setErrorComments((prev) => {
-            const next = new Set(prev);
-            next.delete(comment.url);
-            return next;
-          });
-          timersRef.current.delete(comment.url);
-        }, 3000);
-        timersRef.current.set(comment.url, timer);
-      },
-    );
-  };
 
   const allGreen = isPRMergeReady(pr);
   const blockerIssues = buildBlockerChips(pr, metadata);
@@ -816,14 +755,11 @@ function SessionDetailPRCard({ pr, sessionId, metadata }: { pr: DashboardPR; ses
     void clipboardWrite
       .then(() => {
         setBranchCopied(true);
-        const timerKey = "__copy-branch";
-        const existing = timersRef.current.get(timerKey);
-        if (existing !== undefined) window.clearTimeout(existing);
-        const timer = window.setTimeout(() => {
+        if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = window.setTimeout(() => {
           setBranchCopied(false);
-          timersRef.current.delete(timerKey);
+          copyTimerRef.current = null;
         }, 2000);
-        timersRef.current.set(timerKey, timer);
       })
       .catch(() => {
         /* clipboard unavailable */
@@ -979,6 +915,7 @@ function SessionDetailPRCard({ pr, sessionId, metadata }: { pr: DashboardPR; ses
           <div className="session-detail-comments-strip__body">
             {pr.unresolvedComments.map((c, index) => {
               const { title, description } = cleanBugbotComment(c.body);
+              const fix = fixAction.getState(c.url);
               return (
                 <details key={c.url} className="session-detail-comment" open={index === 0}>
                   <summary>
@@ -1009,19 +946,19 @@ function SessionDetailPRCard({ pr, sessionId, metadata }: { pr: DashboardPR; ses
                     <div className="session-detail-comment__file">{c.path}</div>
                     <p className="session-detail-comment__text">{description}</p>
                     <button
-                      onClick={() => handleAskAgentToFix(c)}
-                      disabled={sendingComments.has(c.url)}
+                      onClick={() => void fixAction.run(c.url, c)}
+                      disabled={fix.sending}
                       className={cn(
                         "session-detail-comment__fix-btn",
-                        sentComments.has(c.url) && "session-detail-comment__fix-btn--sent",
-                        errorComments.has(c.url) && "session-detail-comment__fix-btn--error",
+                        fix.sent && "session-detail-comment__fix-btn--sent",
+                        fix.error !== null && "session-detail-comment__fix-btn--error",
                       )}
                     >
-                      {sendingComments.has(c.url)
+                      {fix.sending
                         ? "Sending\u2026"
-                        : sentComments.has(c.url)
+                        : fix.sent
                           ? "Sent \u2713"
-                          : errorComments.has(c.url)
+                          : fix.error !== null
                             ? "Failed"
                             : "Ask Agent to Fix"}
                     </button>
