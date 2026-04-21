@@ -1599,7 +1599,8 @@ export function registerStop(program: Command): void {
           const sessionPrefix = project.sessionPrefix ?? _projectId;
           const orchestratorId = `${sessionPrefix}-orchestrator`;
           const allSessionPrefixes = Object.entries(config.projects).map(
-            ([projectId, configuredProject]) => configuredProject.sessionPrefix ?? projectId,
+            ([, configuredProject]) =>
+              configuredProject.sessionPrefix ?? generateSessionPrefix(configuredProject.name ?? ""),
           );
           try {
             const spinner = ora("Stopping orchestrator session").start();

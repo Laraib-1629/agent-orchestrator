@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createSessionManager } from "../../session-manager.js";
+import { createInitialCanonicalLifecycle } from "../../lifecycle-state.js";
 import { getWorkspaceAgentsMdPath } from "../../opencode-agents-md.js";
 import {
   writeMetadata,
@@ -1555,6 +1556,118 @@ describe("spawn", () => {
       const session = await sm.spawnOrchestrator({ projectId: "my-app" });
 
       expect(session.runtimeHandle).toEqual(makeHandle("rt-1"));
+    });
+  });
+
+  describe("ensureOrchestrator", () => {
+    function makeDeadOrchestratorLifecycle(timestamp: string) {
+      const lifecycle = createInitialCanonicalLifecycle("orchestrator", new Date(timestamp));
+      lifecycle.session.state = "terminated";
+      lifecycle.session.reason = "runtime_missing";
+      lifecycle.session.startedAt = timestamp;
+      lifecycle.session.terminatedAt = timestamp;
+      lifecycle.session.lastTransitionAt = timestamp;
+      lifecycle.runtime.state = "missing";
+      lifecycle.runtime.reason = "process_missing";
+      lifecycle.runtime.lastObservedAt = timestamp;
+      return lifecycle;
+    }
+
+    it("prefers a live canonical orchestrator over a newer legacy restorable record", async () => {
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      writeMetadata(sessionsDir, "app-orchestrator", {
+        worktree: config.projects["my-app"]!.path,
+        branch: "",
+        status: "working",
+        project: "my-app",
+        role: "orchestrator",
+        createdAt: "2026-04-20T10:00:00.000Z",
+      });
+      writeMetadata(sessionsDir, "app-orchestrator-9", {
+        worktree: "/tmp/dead",
+        branch: "",
+        status: "killed",
+        project: "my-app",
+        role: "orchestrator",
+        createdAt: "2026-04-21T10:00:00.000Z",
+        statePayload: JSON.stringify(makeDeadOrchestratorLifecycle("2026-04-21T10:00:00.000Z")),
+      });
+
+      const session = await sm.ensureOrchestrator({ projectId: "my-app", systemPrompt: "test" });
+
+      expect(session.id).toBe("app-orchestrator");
+      expect(mockRuntime.create).not.toHaveBeenCalled();
+    });
+
+    it("reuses the most recently active live legacy orchestrator", async () => {
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      writeMetadata(sessionsDir, "app-orchestrator-1", {
+        worktree: config.projects["my-app"]!.path,
+        branch: "",
+        status: "working",
+        project: "my-app",
+        role: "orchestrator",
+        createdAt: "2026-04-19T10:00:00.000Z",
+      });
+      writeMetadata(sessionsDir, "app-orchestrator-2", {
+        worktree: config.projects["my-app"]!.path,
+        branch: "",
+        status: "working",
+        project: "my-app",
+        role: "orchestrator",
+        createdAt: "2026-04-21T10:00:00.000Z",
+      });
+
+      const session = await sm.ensureOrchestrator({ projectId: "my-app", systemPrompt: "test" });
+
+      expect(session.id).toBe("app-orchestrator-2");
+      expect(mockRuntime.create).not.toHaveBeenCalled();
+    });
+
+    it("falls through to create when restore fails for a legacy orchestrator", async () => {
+      const sm = createSessionManager({ config, registry: mockRegistry });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockAgent.getRestoreCommand = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("restore command failed"));
+
+      writeMetadata(sessionsDir, "app-orchestrator-3", {
+        worktree: config.projects["my-app"]!.path,
+        branch: "",
+        status: "killed",
+        project: "my-app",
+        role: "orchestrator",
+        createdAt: "2026-04-21T10:00:00.000Z",
+        statePayload: JSON.stringify(makeDeadOrchestratorLifecycle("2026-04-21T10:00:00.000Z")),
+      });
+
+      const session = await sm.ensureOrchestrator({ projectId: "my-app", systemPrompt: "test" });
+
+      expect(session.id).toBe("app-orchestrator");
+      expect(mockRuntime.create).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        "Failed to restore orchestrator session during ensure; falling back",
+        expect.objectContaining({ orchestratorId: "app-orchestrator-3" }),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("throws a clear error when the canonical orchestrator id collides with another project prefix", async () => {
+      config.projects["other-app"] = {
+        ...config.projects["my-app"]!,
+        name: "Other App",
+        storageKey: `${ctx.storageKey}-other`,
+        path: join(tmpDir, "other-app"),
+        sessionPrefix: "app-orchestrator",
+      };
+
+      const sm = createSessionManager({ config, registry: mockRegistry });
+
+      await expect(
+        sm.ensureOrchestrator({ projectId: "my-app", systemPrompt: "test" }),
+      ).rejects.toThrow(/collides with sessionPrefix of project "other-app"/);
     });
   });
 });

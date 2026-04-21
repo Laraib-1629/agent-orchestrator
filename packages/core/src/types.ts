@@ -333,6 +333,43 @@ export interface Session {
   metadata: Record<string, string>;
 }
 
+function compareOrchestratorRecency(
+  a: Pick<Session, "id" | "lastActivityAt" | "createdAt">,
+  b: Pick<Session, "id" | "lastActivityAt" | "createdAt">,
+): number {
+  return (
+    (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0) ||
+    (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+export function selectPreferredOrchestratorSession(
+  sessions: Session[],
+  canonicalSessionId: string,
+): Session | null {
+  const exact = sessions.find((session) => session.id === canonicalSessionId) ?? null;
+  if (exact && !isTerminalSession(exact)) {
+    return exact;
+  }
+
+  const live = sessions
+    .filter((session) => !isTerminalSession(session))
+    .sort(compareOrchestratorRecency);
+  if (live.length > 0) {
+    return live[0] ?? null;
+  }
+
+  if (exact) {
+    return exact;
+  }
+
+  const restorable = sessions
+    .filter((session) => isRestorable(session))
+    .sort(compareOrchestratorRecency);
+  return restorable[0] ?? null;
+}
+
 export function isOrchestratorSession(
   session: { id: SessionId; metadata?: Record<string, string> },
   sessionPrefix?: string,

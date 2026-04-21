@@ -762,13 +762,22 @@ describe("API Routes", () => {
     it("reuses the live canonical orchestrator instead of spawning another one", async () => {
       (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
         makeSession({
-          id: "my-app-orchestrator-30",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           metadata: { role: "orchestrator" },
           status: "working",
           activity: "active",
         }),
       ]);
+      (mockSessionManager.ensureOrchestrator as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        makeSession({
+          id: "my-app-orchestrator",
+          projectId: "my-app",
+          metadata: { role: "orchestrator" },
+          status: "working",
+          activity: "active",
+        }),
+      );
 
       const req = makeRequest("/api/orchestrators", {
         method: "POST",
@@ -778,10 +787,10 @@ describe("API Routes", () => {
       const res = await orchestratorsPOST(req);
 
       expect(res.status).toBe(200);
-      expect(mockSessionManager.ensureOrchestrator).not.toHaveBeenCalled();
+      expect(mockSessionManager.ensureOrchestrator).toHaveBeenCalledTimes(1);
       const data = await res.json();
       expect(data.reusedExisting).toBe(true);
-      expect(data.orchestrator.id).toBe("my-app-orchestrator-30");
+      expect(data.orchestrator.id).toBe("my-app-orchestrator");
     });
 
     it("restores the canonical dead orchestrator instead of spawning another one", async () => {
@@ -796,7 +805,7 @@ describe("API Routes", () => {
 
       (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
         makeSession({
-          id: "my-app-orchestrator-30",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           metadata: { role: "orchestrator" },
           status: "killed",
@@ -804,13 +813,14 @@ describe("API Routes", () => {
           lifecycle: deadLifecycle,
         }),
       ]);
-      (mockSessionManager.restore as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      (mockSessionManager.ensureOrchestrator as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
         makeSession({
-          id: "my-app-orchestrator-30",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           metadata: { role: "orchestrator" },
           status: "spawning",
           activity: "active",
+          restoredAt: new Date("2026-04-21T11:00:00.000Z"),
         }),
       );
 
@@ -822,11 +832,10 @@ describe("API Routes", () => {
       const res = await orchestratorsPOST(req);
 
       expect(res.status).toBe(200);
-      expect(mockSessionManager.restore).toHaveBeenCalledWith("my-app-orchestrator-30");
-      expect(mockSessionManager.ensureOrchestrator).not.toHaveBeenCalled();
+      expect(mockSessionManager.ensureOrchestrator).toHaveBeenCalledTimes(1);
       const data = await res.json();
       expect(data.restoredExisting).toBe(true);
-      expect(data.orchestrator.id).toBe("my-app-orchestrator-30");
+      expect(data.orchestrator.id).toBe("my-app-orchestrator");
     });
 
     it("spawns a fresh orchestrator when canonical restore fails", async () => {
@@ -841,7 +850,7 @@ describe("API Routes", () => {
 
       (mockSessionManager.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
         makeSession({
-          id: "my-app-orchestrator-30",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           metadata: { role: "orchestrator" },
           status: "killed",
@@ -849,12 +858,9 @@ describe("API Routes", () => {
           lifecycle: deadLifecycle,
         }),
       ]);
-      (mockSessionManager.restore as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-        new Error("workspace missing"),
-      );
       (mockSessionManager.ensureOrchestrator as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
         makeSession({
-          id: "my-app-orchestrator-31",
+          id: "my-app-orchestrator",
           projectId: "my-app",
           metadata: { role: "orchestrator" },
           status: "spawning",
@@ -870,10 +876,9 @@ describe("API Routes", () => {
       const res = await orchestratorsPOST(req);
 
       expect(res.status).toBe(201);
-      expect(mockSessionManager.restore).toHaveBeenCalledWith("my-app-orchestrator-30");
       expect(mockSessionManager.ensureOrchestrator).toHaveBeenCalledTimes(1);
       const data = await res.json();
-      expect(data.orchestrator.id).toBe("my-app-orchestrator-31");
+      expect(data.orchestrator.id).toBe("my-app-orchestrator");
     });
 
     it("returns 404 for an unknown project", async () => {

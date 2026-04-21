@@ -101,46 +101,23 @@ export async function POST(request: NextRequest) {
       allSessionPrefixes,
     );
 
-    if (canonical) {
-      if (!isTerminalSession(canonical)) {
-        return NextResponse.json(
-          {
-            orchestrator: mapSessionToOrchestrator(canonical, project.name),
-            reusedExisting: true,
-          },
-          { status: 200 },
-        );
-      }
-
-      if (isRestorable(canonical)) {
-        try {
-          const restored = await sessionManager.restore(canonical.id);
-          return NextResponse.json(
-            {
-              orchestrator: mapSessionToOrchestrator(restored, project.name),
-              reusedExisting: true,
-              restoredExisting: true,
-            },
-            { status: 200 },
-          );
-        } catch (error) {
-          console.warn("Failed to restore canonical orchestrator, falling back to spawn", {
-            projectId,
-            orchestratorId: canonical.id,
-            error,
-          });
-        }
-      }
-    }
-
     const systemPrompt = generateOrchestratorPrompt({ config, projectId, project });
     const session = await sessionManager.ensureOrchestrator({ projectId, systemPrompt });
+    const reusedExisting =
+      canonical !== null && !isTerminalSession(canonical) && canonical.id === session.id;
+    const restoredExisting =
+      canonical !== null &&
+      isRestorable(canonical) &&
+      canonical.id === session.id &&
+      session.restoredAt !== undefined;
 
     return NextResponse.json(
       {
         orchestrator: mapSessionToOrchestrator(session, project.name),
+        ...(reusedExisting ? { reusedExisting: true } : {}),
+        ...(restoredExisting ? { reusedExisting: true, restoredExisting: true } : {}),
       },
-      { status: 201 },
+      { status: reusedExisting || restoredExisting ? 200 : 201 },
     );
   } catch (err) {
     const classified = classifySpawnError(body.projectId as string, err);

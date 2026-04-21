@@ -20,6 +20,7 @@ import {
   isTerminalSession,
   isIssueNotFoundError,
   isRestorable,
+  selectPreferredOrchestratorSession,
   SessionNotFoundError,
   SessionNotRestorableError,
   WorkspaceMissingError,
@@ -70,6 +71,7 @@ import {
   getWorktreesDir,
   getProjectBaseDir,
   generateTmuxName,
+  generateSessionPrefix,
   validateAndStoreOrigin,
 } from "./paths.js";
 import { asValidOpenCodeSessionId } from "./opencode-session-id.js";
@@ -799,48 +801,28 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     );
   }
 
-  function getCanonicalOrchestratorId(project: ProjectConfig): string {
-    return `${project.sessionPrefix}-orchestrator`;
+  function getCanonicalOrchestratorId(projectId: string, project: ProjectConfig): string {
+    const canonicalSessionId = `${project.sessionPrefix}-orchestrator`;
+    const conflictingProject = Object.entries(config.projects).find(
+      ([otherProjectId, otherProject]) =>
+        otherProjectId !== projectId &&
+        (otherProject.sessionPrefix ?? generateSessionPrefix(otherProject.name ?? "")) ===
+          canonicalSessionId,
+    );
+
+    if (conflictingProject) {
+      throw new Error(
+        `Canonical orchestrator ID "${canonicalSessionId}" for project "${projectId}" collides with sessionPrefix of project "${conflictingProject[0]}". Rename one project's sessionPrefix to continue.`,
+      );
+    }
+
+    return canonicalSessionId;
   }
 
   function getCanonicalOrchestratorTmuxName(project: ProjectConfig): string | undefined {
     return project.storageKey
       ? `${project.storageKey}-${project.sessionPrefix}-orchestrator`
       : undefined;
-  }
-
-  function compareOrchestratorRecency(a: Session, b: Session): number {
-    return (
-      (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0) ||
-      (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0) ||
-      a.id.localeCompare(b.id)
-    );
-  }
-
-  function selectPreferredOrchestratorSession(
-    sessions: Session[],
-    canonicalSessionId: string,
-  ): Session | null {
-    const exact = sessions.find((session) => session.id === canonicalSessionId) ?? null;
-    if (exact && !isTerminalSession(exact)) {
-      return exact;
-    }
-
-    const live = sessions
-      .filter((session) => !isTerminalSession(session))
-      .sort(compareOrchestratorRecency);
-    if (live.length > 0) {
-      return live[0] ?? null;
-    }
-
-    if (exact) {
-      return exact;
-    }
-
-    const restorable = sessions
-      .filter((session) => isRestorable(session))
-      .sort(compareOrchestratorRecency);
-    return restorable[0] ?? null;
   }
 
   /** Resolve which plugins to use for a project. */
@@ -1447,7 +1429,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       validateAndStoreOrigin(config.configPath, project.storageKey!);
     }
 
-    const sessionId = getCanonicalOrchestratorId(project);
+    const sessionId = getCanonicalOrchestratorId(orchestratorConfig.projectId, project);
     const tmuxName = getCanonicalOrchestratorTmuxName(project);
     const branch = null;
 
@@ -1679,7 +1661,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
     }
 
-    const canonicalSessionId = getCanonicalOrchestratorId(project);
+    const canonicalSessionId = getCanonicalOrchestratorId(orchestratorConfig.projectId, project);
     const projectSessions = (await list(orchestratorConfig.projectId)).filter((session) =>
       isOrchestratorSessionRecord(session.id, session.metadata, project.sessionPrefix),
     );
@@ -1692,7 +1674,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     if (existing && isRestorable(existing)) {
       try {
         return await restore(existing.id);
-      } catch {
+      } catch (error) {
+        console.warn("Failed to restore orchestrator session during ensure; falling back", {
+          projectId: orchestratorConfig.projectId,
+          orchestratorId: existing.id,
+          error,
+        });
         if (existing.id === canonicalSessionId) {
           return createCanonicalOrchestrator(orchestratorConfig, { replaceExisting: true });
         }
