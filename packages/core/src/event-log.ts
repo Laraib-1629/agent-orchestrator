@@ -27,7 +27,7 @@ import {
   watch,
   type FSWatcher,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getObservabilityBaseDir } from "./paths.js";
 import type { OrchestratorConfig, SessionId } from "./types.js";
@@ -342,19 +342,49 @@ export function followEventLog(
   const filePath = getEventLogPath(config);
   ensureParent(filePath);
   const limit = typeof opts.limit === "number" ? opts.limit : 50;
+  const includeRotated = opts.includeRotated !== false;
 
-  // Emit backlog
-  const backlog = readEventLog(config, { ...opts, limit });
-  for (const entry of backlog) {
+  // Snapshot the current file by capturing its size, then reading exactly
+  // that many bytes. `offset` ends up at the exact byte position where the
+  // snapshot ended, so the tail below starts where the backlog finished —
+  // no race window, no duplication when a concurrent writer appends between
+  // our stat and our read.
+  let offset = 0;
+  let snapshotText = "";
+  try {
+    if (existsSync(filePath)) {
+      const size = statSync(filePath).size;
+      const fd = openSync(filePath, "r");
+      try {
+        const buf = Buffer.alloc(size);
+        const read = readSync(fd, buf, 0, size, 0);
+        offset = read;
+        snapshotText = buf.subarray(0, read).toString("utf-8");
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } catch {
+    offset = 0;
+    snapshotText = "";
+  }
+
+  const backlog: EventLogEntry[] = [];
+  if (includeRotated) {
+    for (const entry of readFileEntries(getRotatedEventLogPath(config))) {
+      if (matchesFilter(entry, opts)) backlog.push(entry);
+    }
+  }
+  for (const line of snapshotText.split("\n")) {
+    const parsed = parseLine(line);
+    if (parsed && matchesFilter(parsed, opts)) backlog.push(parsed);
+  }
+  backlog.sort((a, b) => a.ts.localeCompare(b.ts));
+  const emitted = backlog.length > limit ? backlog.slice(-limit) : backlog;
+  for (const entry of emitted) {
     onEntry(entry);
   }
 
-  let offset = 0;
-  try {
-    offset = existsSync(filePath) ? statSync(filePath).size : 0;
-  } catch {
-    offset = 0;
-  }
   let carry = "";
 
   function drain(): void {
@@ -391,10 +421,11 @@ export function followEventLog(
     }
   }
 
+  const fileName = basename(filePath);
   let watcher: FSWatcher | null = null;
   try {
     watcher = watch(dirname(filePath), { persistent: true }, (_, name) => {
-      if (!name || name === "events.jsonl") {
+      if (!name || name === fileName) {
         drain();
       }
     });

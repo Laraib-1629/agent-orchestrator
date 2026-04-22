@@ -16,6 +16,8 @@ import { dirname } from "node:path";
 import type { ChildProcess } from "node:child_process";
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+/** Only stat the log file for rotation once this many bytes have been written. */
+const ROTATION_CHECK_INTERVAL_BYTES = 64 * 1024;
 
 function rotateIfNeeded(filePath: string, maxBytes: number): void {
   if (!existsSync(filePath)) return;
@@ -43,7 +45,11 @@ function prefixChunk(chunk: Buffer | string, label: string): Buffer {
   const withPrefix = lines
     .slice(0, trailingEmpty ? -1 : undefined)
     .map((line) => `${now} [${label}] ${line}`);
-  const joined = withPrefix.join("\n") + (trailingEmpty ? "\n" : "");
+  // Always terminate with "\n" so adjacent chunks never share a line in the
+  // log file. A chunk without a trailing newline gets one; a chunk that
+  // already ends with "\n" stays correct because `trailingEmpty` stripped
+  // the empty sentinel before the join.
+  const joined = withPrefix.join("\n") + "\n";
   return Buffer.from(joined, "utf-8");
 }
 
@@ -79,10 +85,20 @@ export function teeChildOutput(
     return;
   }
 
+  // Throttle rotation checks: stat'ing the file on every chunk blocks the
+  // event loop for high-throughput subprocesses (e.g. a dev server with HMR).
+  // Check only once per 64 KB written, plus once before the very first write.
+  let bytesSinceRotationCheck = ROTATION_CHECK_INTERVAL_BYTES;
+
   const writeToFile = (chunk: Buffer | string, label: string): void => {
     try {
-      rotateIfNeeded(logFilePath, maxBytes);
-      appendFileSync(logFilePath, prefixChunk(chunk, label));
+      if (bytesSinceRotationCheck >= ROTATION_CHECK_INTERVAL_BYTES) {
+        rotateIfNeeded(logFilePath, maxBytes);
+        bytesSinceRotationCheck = 0;
+      }
+      const payload = prefixChunk(chunk, label);
+      appendFileSync(logFilePath, payload);
+      bytesSinceRotationCheck += payload.length;
     } catch {
       // Best-effort: don't break the child if disk write fails.
     }

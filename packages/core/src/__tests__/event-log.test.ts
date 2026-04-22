@@ -246,6 +246,51 @@ describe("event-log append and read", () => {
 });
 
 describe("event-log follow", () => {
+  it("emits each entry exactly once — no duplicates, no losses across backlog/tail boundary", async () => {
+    // Write 5 entries before follow starts — all must appear as backlog.
+    for (let i = 0; i < 5; i++) {
+      appendEvent(config, {
+        kind: "probe",
+        component: "lifecycle-manager",
+        operation: "lifecycle.sync",
+        data: { tag: `pre-${i}` },
+      });
+    }
+
+    const received: string[] = [];
+    const handle = followEventLog(
+      config,
+      (entry) => {
+        received.push((entry.data as { tag: string }).tag);
+      },
+      { limit: 50 },
+    );
+
+    try {
+      // Append more after follow has captured the snapshot; these must all
+      // be picked up by the tail, each exactly once.
+      for (let i = 0; i < 5; i++) {
+        appendEvent(config, {
+          kind: "probe",
+          component: "lifecycle-manager",
+          operation: "lifecycle.sync",
+          data: { tag: `post-${i}` },
+        });
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // Every tag present exactly once.
+      const counts = new Map<string, number>();
+      for (const tag of received) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      for (let i = 0; i < 5; i++) {
+        expect(counts.get(`pre-${i}`) ?? 0).toBe(1);
+        expect(counts.get(`post-${i}`) ?? 0).toBe(1);
+      }
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("emits backlog and new entries appended after start", async () => {
     appendEvent(config, {
       kind: "probe",

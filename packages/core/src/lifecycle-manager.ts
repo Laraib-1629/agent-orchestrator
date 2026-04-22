@@ -1761,10 +1761,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           session.lifecycle.runtime.state,
           session.lifecycle.runtime.reason,
         ),
-        processProbe: extractProbeDetail(
-          session.lifecycle.runtime.state === "exited" ? "dead" : undefined,
-          session.lifecycle.runtime.reason === "process_missing" ? "process_missing" : undefined,
-        ),
         activityProbe: extractProbeDetail(
           session.activity,
           assessment.evidence,
