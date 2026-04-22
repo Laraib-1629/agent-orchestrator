@@ -2298,23 +2298,39 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         throw new SessionNotFoundError(sessionId);
       }
 
-      // Refuse to operate without a real persisted runtime handle. `get()`
-      // fabricates a handle from the bare sessionId when metadata is missing
-      // one (for liveness checks / display), but using that fabricated handle
-      // here is actively harmful: restore() would spawn a brand-new tmux
-      // session under the wrong name — the real name is
-      // `{projectHash}-{sessionId}` — leaving two agent instances running on
-      // the same worktree simultaneously. See #1456. Check the raw metadata
-      // (not the enriched Session) to detect the missing-handle case.
-      if (!current.metadata["runtimeHandle"]) {
+      // Refuse to operate unless we can recover a real identity for the
+      // runtime session. `ensureHandleAndEnrich` fabricates a handle from the
+      // bare sessionId when metadata has neither a `runtimeHandle` nor a
+      // `tmuxName`; using that fabricated handle here is actively harmful,
+      // because restore() would spawn a brand-new tmux session under the
+      // wrong name (the real name is `{projectHash}-{sessionId}`), leaving
+      // two agent instances on the same worktree. See #1456.
+      //
+      // Accept sessions where `ensureHandleAndEnrich` could build a correct
+      // handle: either the stored `runtimeHandle` JSON parsed successfully,
+      // or a `tmuxName` is present to fall back on. Refuse otherwise — this
+      // also covers the corrupt-JSON case when there's no tmuxName to save
+      // us, which the previous guard missed.
+      const rawHandleJson = current.metadata["runtimeHandle"];
+      const storedTmuxName = current.metadata["tmuxName"]?.trim();
+      const hasParseableHandle = parsedHandle !== null;
+      const hasTmuxName =
+        typeof storedTmuxName === "string" && storedTmuxName.length > 0;
+      if (!hasParseableHandle && !hasTmuxName) {
+        const reason = rawHandleJson
+          ? "has a corrupt runtime handle in metadata and no tmuxName fallback"
+          : "is missing its runtime handle";
         throw new Error(
-          `Session ${sessionId} is missing its runtime handle — ` +
+          `Session ${sessionId} ${reason} — ` +
             `use 'ao session ls' to inspect or 'ao session restore ${sessionId}' explicitly`,
         );
       }
       if (!current.runtimeHandle) {
+        // Defensive: ensureHandleAndEnrich should have populated this from
+        // either the parsed handle or tmuxName. If it didn't, surface it
+        // rather than silently falling through.
         throw new Error(
-          `Session ${sessionId} has a corrupt runtime handle in metadata`,
+          `Session ${sessionId} has no runtime handle after enrichment`,
         );
       }
       const handle = current.runtimeHandle;

@@ -236,6 +236,54 @@ describe("send", () => {
     expect(mockRuntime.create).not.toHaveBeenCalled();
   });
 
+  it("refuses to send when runtimeHandle JSON is corrupt and no tmuxName fallback exists", async () => {
+    // Secondary #1456 case: if the stored runtimeHandle JSON fails to parse
+    // and there's no tmuxName to fall back on, ensureHandleAndEnrich would
+    // otherwise fabricate a handle from the bare sessionId — the same
+    // zombie-session hazard. Refuse explicitly rather than silently
+    // proceeding with the wrong handle.
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: "{not valid json",
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await expect(sm.send("app-1", "hello")).rejects.toThrow(
+      /corrupt runtime handle/,
+    );
+
+    expect(mockRuntime.sendMessage).not.toHaveBeenCalled();
+    expect(mockRuntime.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts legacy sessions with only tmuxName (no runtimeHandle) and uses the tmuxName", async () => {
+    // Legacy sessions predate the runtimeHandle field but carry the real,
+    // project-hash-prefixed tmux name in `tmuxName`. ensureHandleAndEnrich
+    // builds a correct handle from it, so send() must not reject these.
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      tmuxName: "abc123def456-app-1",
+    });
+    vi.mocked(mockRuntime.getOutput)
+      .mockResolvedValueOnce("before")
+      .mockResolvedValueOnce("after");
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.send("app-1", "hello");
+
+    expect(mockRuntime.sendMessage).toHaveBeenCalledWith(
+      { id: "abc123def456-app-1", runtimeName: "mock", data: {} },
+      "hello",
+    );
+    expect(mockRuntime.create).not.toHaveBeenCalled();
+  });
+
   it("auto-discovers OpenCode mapping before sending when missing", async () => {
     const deleteLogPath = join(tmpDir, "opencode-send-remap.log");
     const mockBin = installMockOpencode(
