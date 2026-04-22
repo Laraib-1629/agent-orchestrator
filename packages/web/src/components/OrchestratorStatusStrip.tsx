@@ -25,14 +25,14 @@ interface OrchestratorStatusStripProps {
   crumbLabel: string;
 }
 
-interface ZoneStat {
+export interface ZoneStat {
   value: number;
   label: string;
   color: string;
   bg: string;
 }
 
-function buildZoneStats(zones: OrchestratorZones): ZoneStat[] {
+export function buildZoneStats(zones: OrchestratorZones): ZoneStat[] {
   const all: ZoneStat[] = [
     {
       value: zones.merge,
