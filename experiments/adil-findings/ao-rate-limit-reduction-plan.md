@@ -199,13 +199,69 @@ You should not need to re-fetch this data unless you need additional context.
 
 ---
 
+## Step 3: Remove unused `reviews(last: 5)` from batch query
+
+### What
+
+Remove `reviews(last: 5) { nodes { author { login } state submittedAt } }` from `PR_FIELDS` in `graphql-batch.ts:490-496`.
+
+### Why
+
+This data is fetched on every batch call but **never consumed**. The batch code only uses it for a validation check (`pr["reviews"] === undefined` at line 806) — checking if the response has data. The actual review decision comes from the `reviewDecision` scalar field (line 838), which is separate.
+
+Nobody reads the individual review entries:
+- The lifecycle manager uses `reviewDecision` (scalar) — not individual reviews
+- The dashboard uses `reviewDecision` (scalar) — not individual reviews
+- `PREnrichmentData` has no `reviews` field
+- Even after implementing the shared enrichment plan, the dashboard won't need it — `reviewDecision` is sufficient
+
+### Impact
+
+- Reduces GraphQL query complexity on every batch call (44 calls / 15 min)
+- Each `reviews(last: 5)` adds 5 nested objects with 3 fields each — unnecessary weight
+- No functional change — validation check at line 806 can use other fields (`state`, `title`, `commits`)
+
+### Code change
+
+**File:** `packages/plugins/scm-github/src/graphql-batch.ts`
+
+Remove lines 490-496:
+```graphql
+  reviews(last: 5) {
+    nodes {
+      author { login }
+      state
+      submittedAt
+    }
+  }
+```
+
+Update validation check at line 806 to not reference `reviews`:
+```typescript
+if (
+  pr["state"] === undefined &&
+  pr["title"] === undefined &&
+  pr["commits"] === undefined  // removed: pr["reviews"] === undefined
+) {
+```
+
+---
+
 ## Future Steps (not yet planned in detail)
 
-### Step 3: Increase review backlog throttle
+### Step 4: Increase review backlog throttle
 Change `REVIEW_BACKLOG_THROTTLE_MS` from 2 minutes to 5 minutes. Simple config change, cuts ~60% of review backlog traffic. Would reduce the 55 GraphQL calls to ~22.
 
-### Step 4: Cache issue data in session metadata
-Pass issue data from initial fetch to `generatePrompt()` instead of re-fetching. Saves ~22 `gh issue view` calls per 15 minutes.
+### Step 5: Cache issue data in session metadata
+Persist issue data (number, title, body, url, state, labels, assignees) to session metadata at spawn time. Currently fetched 27 times for 5 sessions — should be 5 (once per session).
 
-### Step 5: Remove unused `reviews(last: 5)` from batch query
-The batch GraphQL query fetches `reviews(last: 5)` with author, state, submittedAt — but this data is never consumed after a validation check. The `reviewDecision` scalar field already provides what AO needs. Removing it reduces GraphQL complexity cost per batch call.
+The tracker plugin already has a 5-minute TTL in-memory cache (`ISSUE_CACHE_TTL_MS` at `tracker-github/index.ts:121`), but it's per-process — both CLI and web create their own instance.
+
+**Fix:** Write issue data to session metadata at spawn. Dashboard reads from metadata. Eliminates all repeated `gh issue view` calls from both processes.
+
+Fields to persist:
+- `number`, `title`, `body`, `url` — static for session lifetime
+- `state` — changes only when AO closes it (AO already knows)
+- `labels`, `assignees` — rarely change
+
+Saves ~22 `gh issue view` calls per 15 minutes.
