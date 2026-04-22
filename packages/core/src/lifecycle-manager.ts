@@ -457,6 +457,48 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
   }
 
+  /**
+   * Persist batch enrichment data to session metadata files.
+   * The web dashboard reads this instead of calling GitHub API.
+   */
+  function persistPREnrichmentToMetadata(sessions: Session[]): void {
+    for (const session of sessions) {
+      if (!session.pr) continue;
+      const project = config.projects[session.projectId];
+      if (!project) continue;
+
+      const prKey = `${session.pr.owner}/${session.pr.repo}#${session.pr.number}`;
+      const cached = prEnrichmentCache.get(prKey);
+      if (!cached) continue;
+
+      const blob = JSON.stringify({
+        state: cached.state,
+        ciStatus: cached.ciStatus,
+        reviewDecision: cached.reviewDecision,
+        mergeable: cached.mergeable,
+        title: cached.title,
+        additions: cached.additions,
+        deletions: cached.deletions,
+        isDraft: cached.isDraft,
+        hasConflicts: cached.hasConflicts,
+        isBehind: cached.isBehind,
+        blockers: cached.blockers,
+        ciChecks: cached.ciChecks?.map((c) => ({
+          name: c.name,
+          status: c.status,
+          url: c.url,
+        })),
+        enrichedAt: new Date().toISOString(),
+      });
+
+      if (session.metadata["prEnrichment"] === blob) continue;
+
+      const sessionsDir = getSessionsDir(config.configPath, project.path);
+      updateMetadata(sessionsDir, session.id, { prEnrichment: blob });
+      session.metadata["prEnrichment"] = blob;
+    }
+  }
+
   /** Check if idle time exceeds the agent-stuck threshold. */
   function isIdleBeyondThreshold(session: Session, idleTimestamp: Date): boolean {
     const stuckReaction = getReactionConfigForSession(session, "agent-stuck");
@@ -1121,6 +1163,24 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     } catch {
       // Failed to fetch — preserve existing metadata
+    }
+
+    // Persist review comments to metadata for dashboard consumption
+    if (allThreads !== null) {
+      const unresolved = allThreads.filter((c) => !c.isBot);
+      const reviewBlob = JSON.stringify({
+        unresolvedThreads: unresolved.length,
+        unresolvedComments: unresolved.map((c) => ({
+          url: c.url,
+          path: c.path ?? "",
+          author: c.author,
+          body: c.body,
+        })),
+        commentsUpdatedAt: new Date().toISOString(),
+      });
+      if (session.metadata["prReviewComments"] !== reviewBlob) {
+        updateSessionMetadata(session, { prReviewComments: reviewBlob });
+      }
     }
 
     const pendingComments = allThreads
@@ -1862,6 +1922,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Poll all sessions concurrently
       await Promise.allSettled(sessionsToCheck.map((s) => checkSession(s)));
+
+      // Persist batch enrichment data to session metadata files so the
+      // web dashboard can read it without calling GitHub API.
+      persistPREnrichmentToMetadata(sessionsToCheck);
 
       // Prune stale entries from states, reactionTrackers, and lastReviewBacklogCheckAt
       // for sessions that no longer appear in the session list (e.g., after kill/cleanup)

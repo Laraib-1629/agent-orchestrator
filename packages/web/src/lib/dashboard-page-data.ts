@@ -6,10 +6,9 @@ import {
   type DashboardOrchestratorLink,
   type DashboardAttentionZoneMode,
 } from "@/lib/types";
-import { getServices, getSCM } from "@/lib/services";
+import { getServices } from "@/lib/services";
 import {
   sessionToDashboard,
-  resolveProject,
   enrichSessionPR,
   enrichSessionsMetadataFast,
   listDashboardOrchestrators,
@@ -83,15 +82,10 @@ export const getDashboardPageData = cache(async function getDashboardPageData(pr
       FAST_METADATA_ENRICH_TIMEOUT_MS,
     );
 
-    // PR cache hits only (in-memory lookup, no SCM API calls).
+    // PR enrichment from session metadata (no API calls).
     for (let i = 0; i < coreSessions.length; i++) {
-      const core = coreSessions[i];
-      if (!core.pr) continue;
-      const projectConfig = resolveProject(core, config.projects);
-      const scm = getSCM(registry, projectConfig);
-      if (scm) {
-        await enrichSessionPR(pageData.sessions[i], scm, core.pr, { cacheOnly: true });
-      }
+      if (!coreSessions[i].pr) continue;
+      enrichSessionPR(pageData.sessions[i]);
     }
   } catch {
     pageData.sessions = [];

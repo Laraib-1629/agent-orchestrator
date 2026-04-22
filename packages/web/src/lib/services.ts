@@ -87,10 +87,11 @@ async function initServices(): Promise<Services> {
 
   const sessionManager = createSessionManager({ config, registry });
 
-  // Start the lifecycle manager — polls sessions every 30s, triggers reactions
-  // (CI failure → send fix message, review comments → forward to agent, etc.)
+  // Lifecycle manager for webhook-triggered checks only — no polling.
+  // The CLI process runs the 30s polling loop and writes enrichment data to
+  // session metadata. The dashboard reads from metadata instead of calling
+  // GitHub API directly.
   const lifecycleManager = createLifecycleManager({ config, registry, sessionManager });
-  lifecycleManager.start(30_000);
 
   const services = { config, registry, sessionManager, lifecycleManager };
   globalForServices._aoServices = services;
