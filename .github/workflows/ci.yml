@@ -35,8 +35,9 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Run knip (advisory — never fails the build)
-        run: pnpm knip || true
+      - name: Run knip (advisory — warning only)
+        run: pnpm knip
+        continue-on-error: true
 
   typecheck:
     name: Typecheck
