@@ -304,8 +304,17 @@ describe("plugin integration", () => {
         runtimeHandle: JSON.stringify(makeHandle("rt-1")),
       });
 
-      // Mock gh: issue is closed
-      mockGh({ state: "CLOSED" });
+      // Mock gh: issue is closed (full Issue shape so getIssue/isCompleted parse it)
+      mockGh({
+        number: 99,
+        title: "test",
+        body: "",
+        url: "https://github.com/acme/app/issues/99",
+        state: "CLOSED",
+        stateReason: "COMPLETED",
+        labels: [],
+        assignees: [],
+      });
 
       const result = await sm.cleanup("my-app");
 
@@ -329,8 +338,17 @@ describe("plugin integration", () => {
         runtimeHandle: JSON.stringify(makeHandle("rt-1")),
       });
 
-      // Mock gh: issue is closed
-      mockGh({ state: "CLOSED" });
+      // Mock gh: issue is closed (full Issue shape so getIssue/isCompleted parse it)
+      mockGh({
+        number: 99,
+        title: "test",
+        body: "",
+        url: "https://github.com/acme/app/issues/99",
+        state: "CLOSED",
+        stateReason: "COMPLETED",
+        labels: [],
+        assignees: [],
+      });
 
       const result = await sm.cleanup("my-app");
 
@@ -356,8 +374,17 @@ describe("plugin integration", () => {
         runtimeHandle: JSON.stringify(makeHandle("rt-1")),
       });
 
-      // Mock gh: issue is still open — runtime also alive
-      mockGh({ state: "OPEN" });
+      // Mock gh: issue is still open (full Issue shape so getIssue/isCompleted parse it)
+      mockGh({
+        number: 99,
+        title: "test",
+        body: "",
+        url: "https://github.com/acme/app/issues/99",
+        state: "OPEN",
+        stateReason: null,
+        labels: [],
+        assignees: [],
+      });
 
       const result = await sm.cleanup("my-app");
 
