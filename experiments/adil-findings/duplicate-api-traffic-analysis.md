@@ -163,6 +163,101 @@ scm.getPendingComments(pr),
 
 This is the same GraphQL review threads query that the lifecycle manager already runs every 2 minutes. The dashboard calls it on every SSE tick (5s), multiplied by number of PRs.
 
+## Full Cache Architecture — Three Caches, Zero Shared State
+
+The CLI and web dashboard run as **separate Node.js processes**. Each creates its own full plugin stack. No cache is shared across processes.
+
+### Cache Layer 1: Batch Enrichment (per lifecycle manager)
+
+**Files:**
+- `packages/plugins/scm-github/src/graphql-batch.ts` — ETag caches + PR enrichment data cache
+- `packages/core/src/lifecycle-manager.ts:322` — `prEnrichmentCache` (cleared and rebuilt every poll cycle)
+
+| Cache | What | Scope |
+|-------|------|-------|
+| `etagCache.prList` | ETag strings per repo | LRU, 100 entries |
+| `etagCache.commitStatus` | ETag strings per commit SHA | LRU, 500 entries |
+| `prMetadataCache` | headSha + ciStatus per PR | LRU, 200 entries |
+| `prEnrichmentDataCache` | Full PR enrichment data | LRU, 200 entries |
+| `prEnrichmentCache` | Map rebuilt from above each cycle | Cleared every 30s |
+
+**CLI process has one copy. Web process has another. They never share.**
+
+### Cache Layer 2: SCM Plugin Per-Method TTL Cache
+
+**File:** `packages/plugins/scm-github/src/index.ts:464-476`
+
+Each `createGitHubSCM()` call creates an isolated `prCache` Map (line 483). Every method (`getPRState`, `getCIChecks`, etc.) is wrapped with `withPRCache()` (line 518) that checks/writes this cache.
+
+| Method | TTL |
+|--------|-----|
+| `getPRState` | 5s |
+| `getPRSummary` | 5s |
+| `getCIChecks` | 5s |
+| `getMergeability` | 5s |
+| `getReviewDecision` | 10s |
+| `getPendingComments` | 10s |
+| `getReviews` | 10s |
+| `detectPR` | 30s |
+| `resolvePR` | 60s |
+
+**The web process registers its own SCM plugin** (`packages/web/src/lib/services.ts:84`) which creates a separate `createGitHubSCM()` instance with its own `prCache`. The CLI's SCM plugin cache is invisible to the web process and vice versa.
+
+### Cache Layer 3: Dashboard PR Cache
+
+**File:** `packages/web/src/lib/cache.ts:109`
+
+| Cache | What | TTL |
+|-------|------|-----|
+| `prCache` | PR enrichment data for dashboard display | 5 min (default), 60 min if rate-limited |
+| `issueTitleCache` | Issue titles | 5 min |
+
+Only exists in the web process. Fills by calling the web process's SCM plugin (which calls GitHub API independently). Every 5 minutes, all entries expire and trigger a burst of API calls.
+
+### The Duplication
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    GitHub API                            │
+└────────────────────────┬────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         │                               │
+   SCM Plugin Cache              SCM Plugin Cache
+   (5-30s TTL)                   (5-30s TTL)
+   OWN INSTANCE                  OWN INSTANCE
+         │                               │
+   ┌─────┴─────┐                   ┌─────┴─────┐
+   │           │                   │           │
+Batch LRU   LC enrichment      Batch LRU   Dashboard
++ ETag      cache               + ETag      TTL cache
+caches      (per cycle)         caches      (5 min)
+   │           │                   │           │
+Lifecycle   Lifecycle           Lifecycle   Dashboard
+Manager     Manager             Manager     serialize.ts
+(CLI)       (ignored -          (Web)
+            web has own)
+```
+
+**Every component in the right column is a complete duplicate of the left column**, hitting the same GitHub API for the same PRs with the same fields. The web process creates:
+- Its own plugin registry (`services.ts:75`)
+- Its own SCM plugin instance (`services.ts:84`)
+- Its own lifecycle manager (`services.ts:92`)
+- Its own session manager (`services.ts:88`)
+- Plus the dashboard's own `prCache` on top
+
+**Total independent plugin stacks:**
+
+| Component | CLI Process | Web Process |
+|-----------|:-----------:|:-----------:|
+| Plugin registry | Own instance | Own instance |
+| SCM plugin + prCache | Own instance | Own instance |
+| Lifecycle manager + batch caches | Own instance | Own instance |
+| Session manager | Own instance | Own instance |
+| Dashboard prCache | — | Own instance |
+
+Two processes, two full stacks, zero shared state, double the API traffic.
+
 ## Revised Call Attribution (465 total)
 
 | Operation | Dashboard | Lifecycle A | Lifecycle B | Total |
