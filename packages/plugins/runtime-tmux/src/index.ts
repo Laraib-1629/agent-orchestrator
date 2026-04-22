@@ -66,6 +66,16 @@ export function create(): Runtime {
       // Create tmux session in detached mode
       await tmux("new-session", "-d", "-s", sessionName, "-c", config.workspacePath, ...envArgs);
 
+      // Re-export PATH after shell init. macOS zsh runs path_helper during
+      // shell startup which resets PATH, wiping entries set via tmux -e.
+      // Sending export after the shell is initialized ensures PATH sticks.
+      const pathValue = config.environment?.["PATH"];
+      if (pathValue) {
+        await tmux("send-keys", "-t", sessionName, "-l", `export PATH='${pathValue}'`);
+        await tmux("send-keys", "-t", sessionName, "Enter");
+        await sleep(100);
+      }
+
       // Send the launch command — clean up the session if this fails.
       // Use a temp script for long commands so the pane shows a short
       // invocation instead of a pasted wall of shell.
