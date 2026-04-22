@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-23
 **Branch:** `feat/gh-rate-limiting`
-**Trace file:** `experiments/out/gh-trace-real-1776897471.jsonl`
+**Trace file:** `experiments/out/gh-trace-real-1776897471.jsonl` ([gist](https://gist.github.com/iamasx/797f36fda8a88f6babad48c735bbea53))
 **Applied optimizations:** Step 1 (remove REST fallback), Step 2 (consolidate review comments), Step 3 (remove dead reviews field)
 
 ## Test Conditions
