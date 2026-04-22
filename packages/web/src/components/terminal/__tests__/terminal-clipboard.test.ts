@@ -83,8 +83,9 @@ describe("registerClipboardHandlers", () => {
       expect(writes).toHaveLength(1);
       // tmux looks for "XTerm(" in the response — see tmux tty-keys.c.
       expect(writes[0]).toContain("XTerm(");
-      // Response is wrapped in DCS (\x1bP) ... ST (\x1b\\).
-      expect(writes[0]).toMatch(/^\x1bP.*\x1b\\$/);
+      // Response is wrapped in DCS (ESC P) ... ST (ESC \).
+      expect(writes[0].startsWith("\x1bP")).toBe(true);
+      expect(writes[0].endsWith("\x1b\\")).toBe(true);
     });
   });
 
