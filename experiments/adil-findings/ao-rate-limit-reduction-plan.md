@@ -62,22 +62,16 @@ Poll cycle N+1 (30 seconds later):
 | PR just created, not yet in batch | 30s delay on first detection | Expected — happens once per session |
 | GraphQL rate limit hit, REST still available | Can't fall back to REST | Unlikely at current volumes |
 
-### Code change
+### Code changes
+
+Remove fallback paths in **all three functions** that fall back to individual REST calls on batch cache miss:
+
+#### 1. `determineStatus()` — lines 765-810
 
 **File:** `packages/core/src/lifecycle-manager.ts`
 
-**Before (lines 755-810):**
-```typescript
-if (cachedData) {
-  return commit(resolvePREnrichmentDecision(cachedData, { ... }));
-}
+Remove the individual `getPRState` + `getCISummary` + `getReviewDecision` + `getMergeability` fallback block (~45 lines). When `cachedData` is null, the function falls through to the agent report path (line 824+) or keeps the previous status.
 
-// Individual fallback calls (TO BE REMOVED):
-const prState = await scm.getPRState(session.pr);
-// ... 45 lines of individual REST calls
-```
-
-**After:**
 ```typescript
 if (cachedData) {
   return commit(resolvePREnrichmentDecision(cachedData, { ... }));
@@ -85,6 +79,30 @@ if (cachedData) {
 
 // No fallback — batch will populate cache on next cycle (30s).
 // Status stays unchanged for this cycle.
+```
+
+#### 2. `maybeDispatchCIFailureDetails()` — lines 1357-1363
+
+Remove the `scm.getCIChecks(session.pr)` fallback. If `cachedEnrichment?.ciChecks` is undefined, skip the dispatch for this cycle.
+
+```typescript
+if (cachedEnrichment?.ciChecks !== undefined) {
+  checks = cachedEnrichment.ciChecks;
+} else {
+  return; // batch will have it next cycle
+}
+```
+
+#### 3. `maybeDispatchMergeConflicts()` — lines 1486-1492
+
+Remove the `scm.getMergeability(session.pr)` fallback (3-4 REST calls). If `cachedData` is null, skip conflict detection for this cycle.
+
+```typescript
+if (cachedData) {
+  hasConflicts = cachedData.hasConflicts ?? false;
+} else {
+  return; // batch will have it next cycle
+}
 ```
 
 ### Expected impact
