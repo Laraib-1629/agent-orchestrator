@@ -99,16 +99,95 @@ if (cachedData) {
 
 ---
 
+## Step 2: Eliminate REST automated comments call — use single GraphQL for all review comments
+
+### What
+
+Remove `getAutomatedComments()` (REST call) entirely. The existing `getPendingComments()` GraphQL call already fetches **all** review threads (human + bot) via `reviewThreads(first: 100)`. Both calls currently fetch overlapping data and filter to opposite sides:
+
+- `getPendingComments` (GraphQL) → fetches all threads → keeps human, discards bot
+- `getAutomatedComments` (REST) → fetches all comments → keeps bot, discards human
+
+Replace with a single GraphQL call that returns both, split locally in the lifecycle manager.
+
+### Why
+
+- **40 REST calls eliminated** per 15 minutes (the entire `getAutomatedComments` REST pagination loop).
+- **No data loss.** The GraphQL `reviewThreads` query returns the same fields the REST call provides (author, body, path, line, url), plus `isResolved` which REST doesn't have.
+- The REST call fetches ALL comments (human + bot) just to keep bots — wasteful for PRs with many human comments.
+
+### How
+
+1. **Modify `getPendingComments()`** to return both human and bot comments (or split into two arrays). Currently filters out bots at line 971:
+   ```typescript
+   return !BOT_AUTHORS.has(author);  // ← remove this filter
+   ```
+
+2. **Lifecycle manager splits locally** — the consumer at `lifecycle-manager.ts:1157-1160` receives one response and partitions by author:
+   - `BOT_AUTHORS.has(author)` → automated comments pipeline (fingerprint + reaction)
+   - `!BOT_AUTHORS.has(author)` → human comments pipeline (fingerprint + reaction)
+
+3. **Remove `getAutomatedComments()`** from `scm-github/index.ts` and its REST pagination loop (lines 992-1066).
+
+4. **Update the SCM interface** in `types.ts` if `getAutomatedComments` is part of the interface contract.
+
+### Include comment data in agent reaction message
+
+Currently the reaction messages are static strings that **tell the agent to call `gh`** to fetch comments:
+
+```
+"There are review comments on your PR. Check with `gh pr view --comments`
+and `gh api` for inline comments. Address each one, push fixes, and reply."
+```
+
+This causes the agent to make redundant `gh` read calls for data AO already has.
+
+**Fix:** Construct the reaction message with actual comment data inline:
+
+```
+The following review comments are unresolved on your PR (as of just now).
+You should not need to re-fetch this data unless you need additional context.
+
+1. src/auth.ts:42 (@reviewer): "Fix error handling here"
+   https://github.com/org/repo/pull/57#discussion_r12345
+
+2. src/utils.ts:15 (@reviewer): "This should be async"
+   https://github.com/org/repo/pull/57#discussion_r12346
+```
+
+**Key design decisions:**
+- Provide thread URL so the agent can reply/interact if it chooses to
+- Don't prescribe response behavior (e.g., "reply to each thread") — let the agent decide how to acknowledge the review
+- Don't block the agent from calling `gh` — just say "you should not need to" in case something breaks or it needs additional context
+- Same approach for bot comments — include the bot findings inline
+
+### Code changes
+
+| File | Change |
+|------|--------|
+| `packages/plugins/scm-github/src/index.ts` | Modify `getPendingComments()` to return all threads (human + bot). Remove `getAutomatedComments()`. |
+| `packages/core/src/types.ts` | Update SCM interface if `getAutomatedComments` is in the contract |
+| `packages/core/src/lifecycle-manager.ts` | Split combined response into human/bot locally. Build reaction message with comment data instead of static string. |
+| `packages/core/src/config.ts` | Update default reaction messages (remove "check with `gh pr view`" instruction) |
+
+### Expected impact
+
+| Metric | Before | After Step 1+2 |
+|--------|--------|----------------|
+| REST automated comment calls / 15 min | 40 | 0 |
+| GraphQL review thread calls / 15 min | 55 | 55 (unchanged — same call, now serves both) |
+| Agent-side `gh` read calls for reviews | ~10-20 per session | ~0 (data provided inline) |
+| Total calls / 15 min | ~355 (after Step 1) | ~315 |
+
+---
+
 ## Future Steps (not yet planned in detail)
 
-### Step 2: Fold review threads into batch GraphQL query
-Add `reviewThreads(first: 100)` to the existing `generateBatchQuery()` in `graphql-batch.ts`. Eliminates 55 standalone GraphQL calls per 15 minutes. Zero extra API calls since it piggybacks on the existing batch request.
+### Step 3: Increase review backlog throttle
+Change `REVIEW_BACKLOG_THROTTLE_MS` from 2 minutes to 5 minutes. Simple config change, cuts ~60% of review backlog traffic. Would reduce the 55 GraphQL calls to ~22.
 
-### Step 3: Add ETag to automated comments REST call
-`GET /repos/.../pulls/.../comments` supports ETags. Add If-None-Match header. Most calls return 304 when comments haven't changed.
-
-### Step 4: Increase review backlog throttle
-Change `REVIEW_BACKLOG_THROTTLE_MS` from 2 minutes to 5 minutes. Simple config change, cuts ~60% of review backlog traffic.
-
-### Step 5: Cache issue data in session metadata
+### Step 4: Cache issue data in session metadata
 Pass issue data from initial fetch to `generatePrompt()` instead of re-fetching. Saves ~22 `gh issue view` calls per 15 minutes.
+
+### Step 5: Remove unused `reviews(last: 5)` from batch query
+The batch GraphQL query fetches `reviews(last: 5)` with author, state, submittedAt — but this data is never consumed after a validation check. The `reviewDecision` scalar field already provides what AO needs. Removing it reduces GraphQL complexity cost per batch call.
