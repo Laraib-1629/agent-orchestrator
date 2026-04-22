@@ -223,6 +223,13 @@ export function useXtermTerminal(
           }
         });
 
+        // Track whether our own write()-driven scrollTop change triggered the
+        // next scroll event. Declared before subscribeTerminal() so the
+        // callback's closure captures an initialised binding — not strictly
+        // required today (WebSocket callbacks are async) but removes the TDZ
+        // hazard if subscribeTerminal ever fires synchronously.
+        let programmaticScroll = false;
+
         openTerminal(sessionId);
 
         unsubscribe = subscribeTerminal(sessionId, (data) => {
@@ -242,7 +249,6 @@ export function useXtermTerminal(
           }
         });
 
-        let programmaticScroll = false;
         const handleViewportScroll = () => {
           if (!viewport) return;
           if (programmaticScroll) {

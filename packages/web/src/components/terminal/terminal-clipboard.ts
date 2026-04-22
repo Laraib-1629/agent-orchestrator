@@ -16,7 +16,6 @@ export function registerClipboardHandlers(terminal: TerminalType): void {
     { prefix: ">", final: "q" }, // CSI > q is XTVERSION / XDA
     () => {
       terminal.write("\x1bP>|XTerm(370)\x1b\\");
-      console.log("[DirectTerminal] Sent XDA response for clipboard support");
       return true;
     },
   );

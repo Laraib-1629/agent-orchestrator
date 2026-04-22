@@ -2,14 +2,14 @@ import type { ITheme } from "@xterm/xterm";
 
 export type TerminalVariant = "agent" | "orchestrator";
 
-export function buildTerminalThemes(variant: TerminalVariant): { dark: ITheme; light: ITheme } {
-  const agentAccent = {
+export function buildTerminalThemes(_variant: TerminalVariant): { dark: ITheme; light: ITheme } {
+  // Orchestrator and agent currently share the design-system accent; the
+  // variant parameter is preserved for API compatibility and future divergence.
+  const accent = {
     cursor: "#5b7ef8",
     selDark: "rgba(91, 126, 248, 0.30)",
     selLight: "rgba(91, 126, 248, 0.25)",
   };
-  const orchAccent = agentAccent;
-  const accent = variant === "orchestrator" ? orchAccent : agentAccent;
 
   const dark: ITheme = {
     background: "#0a0a0f",
