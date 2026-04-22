@@ -66,27 +66,27 @@ export function create(): Runtime {
       // Create tmux session in detached mode
       await tmux("new-session", "-d", "-s", sessionName, "-c", config.workspacePath, ...envArgs);
 
-      // Re-export PATH after shell init. macOS zsh runs path_helper during
-      // shell startup which resets PATH, wiping entries set via tmux -e.
-      // Sending export after the shell is initialized ensures PATH sticks.
+      // Re-export PATH inside the launch script. macOS zsh runs path_helper
+      // during shell startup which resets PATH, wiping entries set via tmux -e.
+      // Including the export in the script file (not send-keys) avoids terminal
+      // buffer issues with long PATH values (1000+ chars).
       const pathValue = config.environment?.["PATH"];
+      let launchCommand = config.launchCommand;
       if (pathValue) {
-        await tmux("send-keys", "-t", sessionName, "-l", `export PATH='${pathValue}'`);
-        await tmux("send-keys", "-t", sessionName, "Enter");
-        await sleep(100);
+        launchCommand = `export PATH='${pathValue}'\n${launchCommand}`;
       }
 
       // Send the launch command — clean up the session if this fails.
       // Use a temp script for long commands so the pane shows a short
       // invocation instead of a pasted wall of shell.
       try {
-        if (config.launchCommand.length > 200) {
-          const invocation = writeLaunchScript(config.launchCommand);
+        if (launchCommand.length > 200) {
+          const invocation = writeLaunchScript(launchCommand);
           await tmux("send-keys", "-t", sessionName, "-l", invocation);
           await sleep(300);
           await tmux("send-keys", "-t", sessionName, "Enter");
         } else {
-          await tmux("send-keys", "-t", sessionName, config.launchCommand, "Enter");
+          await tmux("send-keys", "-t", sessionName, launchCommand, "Enter");
         }
       } catch (err: unknown) {
         try {
