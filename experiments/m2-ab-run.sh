@@ -50,6 +50,7 @@ done
 : "${MAIN_DIR:?--main-dir required}"
 
 CONFIG_FILE="$PROJECT_DIR/agent-orchestrator.yaml"
+REPO=$(grep -E '^\s*repo:' "$CONFIG_FILE" | head -1 | awk '{print $2}' | tr -d '"')
 FEAT_CLI="$FEAT_DIR/packages/cli/dist/index.js"
 MAIN_CLI="$MAIN_DIR/packages/cli/dist/index.js"
 LF_SCRIPT="$FEAT_DIR/experiments/limit-finder.sh"
