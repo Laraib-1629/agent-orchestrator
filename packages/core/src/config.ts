@@ -572,13 +572,13 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
       auto: true,
       action: "send-to-agent",
       message:
-        "There are review comments on your PR. Check with `gh pr view --comments` and `gh api` for inline comments. Address each one, push fixes, and reply.",
+        "There are review comments on your PR. Details will follow shortly.",
       escalateAfter: "30m",
     },
     "bugbot-comments": {
       auto: true,
       action: "send-to-agent",
-      message: "Automated review comments found on your PR. Fix the issues flagged by the bot.",
+      message: "Automated review comments found on your PR. Details will follow shortly.",
       escalateAfter: "30m",
     },
     "merge-conflicts": {
