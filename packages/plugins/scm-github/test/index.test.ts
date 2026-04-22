@@ -1424,5 +1424,174 @@ describe("scm-github plugin", () => {
       expect(fromB).toBe("merged");
       expect(ghMock).toHaveBeenCalledTimes(2);
     });
+
+    // ---- detectPR (positive-only cache) ----
+
+    it("detectPR caches positive results (PR found)", async () => {
+      mockGh([
+        {
+          number: 42,
+          url: "https://github.com/acme/repo/pull/42",
+          title: "feat: add feature",
+          headRefName: "feat/my-feature",
+          baseRefName: "main",
+          isDraft: false,
+        },
+      ]);
+      const a = await scm.detectPR(makeSession(), project);
+      const b = await scm.detectPR(makeSession(), project);
+      expect(a?.number).toBe(42);
+      expect(b?.number).toBe(42);
+      expect(ghMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("detectPR does NOT cache negative results (no PR yet)", async () => {
+      mockGh([]);
+      mockGh([]);
+      const a = await scm.detectPR(makeSession(), project);
+      const b = await scm.detectPR(makeSession(), project);
+      expect(a).toBeNull();
+      expect(b).toBeNull();
+      expect(ghMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("detectPR transitions null → PR on next call without cache poisoning", async () => {
+      mockGh([]); // first call: no PR yet
+      const before = await scm.detectPR(makeSession(), project);
+      expect(before).toBeNull();
+
+      mockGh([
+        {
+          number: 7,
+          url: "https://github.com/acme/repo/pull/7",
+          title: "Just created",
+          headRefName: "feat/my-feature",
+          baseRefName: "main",
+          isDraft: false,
+        },
+      ]);
+      const after = await scm.detectPR(makeSession(), project);
+      expect(after?.number).toBe(7);
+      expect(ghMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("detectPR caches different branches independently", async () => {
+      mockGh([
+        {
+          number: 1,
+          url: "u1",
+          title: "t1",
+          headRefName: "feat/a",
+          baseRefName: "main",
+          isDraft: false,
+        },
+      ]);
+      mockGh([
+        {
+          number: 2,
+          url: "u2",
+          title: "t2",
+          headRefName: "feat/b",
+          baseRefName: "main",
+          isDraft: false,
+        },
+      ]);
+      const a = await scm.detectPR(makeSession({ branch: "feat/a" }), project);
+      const b = await scm.detectPR(makeSession({ branch: "feat/b" }), project);
+      expect(a?.number).toBe(1);
+      expect(b?.number).toBe(2);
+      expect(ghMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("mergePR invalidates the branch's detectPR entry", async () => {
+      mockGh([
+        {
+          number: 42,
+          url: "https://github.com/acme/repo/pull/42",
+          title: "feat",
+          headRefName: pr.branch,
+          baseRefName: "main",
+          isDraft: false,
+        },
+      ]);
+      await scm.detectPR(makeSession({ branch: pr.branch }), project);
+      expect(ghMock).toHaveBeenCalledTimes(1);
+
+      ghMock.mockResolvedValueOnce({ stdout: "" }); // gh pr merge
+      await scm.mergePR(pr);
+
+      // detectPR re-fetches because the merge invalidated the branch entry
+      mockGh([]);
+      const after = await scm.detectPR(makeSession({ branch: pr.branch }), project);
+      expect(after).toBeNull();
+      expect(ghMock).toHaveBeenCalledTimes(3);
+    });
+
+    // ---- getCIChecks / getMergeability / getPendingComments ----
+
+    it("getCIChecks caches result (5s TTL)", async () => {
+      mockGh([{ name: "build", state: "SUCCESS", link: "u", startedAt: "", completedAt: "" }]);
+      await scm.getCIChecks(pr);
+      await scm.getCIChecks(pr);
+      expect(ghMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("getMergeability caches the composite result", async () => {
+      // First call: getPRState (1) + pr view mergeable (2) + getCISummary→getCIChecks (3)
+      mockGh({ state: "OPEN" }); // getPRState
+      mockGh({
+        mergeable: "MERGEABLE",
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN",
+        isDraft: false,
+      });
+      mockGh([{ name: "build", state: "SUCCESS" }]); // getCIChecks
+      const first = await scm.getMergeability(pr);
+      expect(first.mergeable).toBe(true);
+
+      // Second call within TTL: top-level getMergeability cache hits.
+      // No new gh calls because the composite result short-circuits.
+      const second = await scm.getMergeability(pr);
+      expect(second).toEqual(first);
+      expect(ghMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("mergePR invalidates getMergeability cache", async () => {
+      mockGh({ state: "OPEN" });
+      mockGh({
+        mergeable: "MERGEABLE",
+        reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN",
+        isDraft: false,
+      });
+      mockGh([{ name: "build", state: "SUCCESS" }]);
+      await scm.getMergeability(pr);
+      expect(ghMock).toHaveBeenCalledTimes(3);
+
+      ghMock.mockResolvedValueOnce({ stdout: "" }); // gh pr merge
+      await scm.mergePR(pr);
+
+      // After merge: state cached as merged; getMergeability re-derives
+      // the merged shortcut result without making more gh calls.
+      mockGh({ state: "MERGED" }); // getPRState refetch
+      const after = await scm.getMergeability(pr);
+      expect(after.mergeable).toBe(true);
+      expect(after.blockers).toEqual([]);
+    });
+
+    it("getPendingComments caches result", async () => {
+      mockGhRaw(
+        JSON.stringify({
+          data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } },
+        }),
+      );
+      await scm.getPendingComments(pr);
+      await scm.getPendingComments(pr);
+      expect(ghMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
+
+function mockGhRaw(stdout: string) {
+  ghMock.mockResolvedValueOnce({ stdout });
+}

@@ -451,16 +451,22 @@ function parseDate(val: string | undefined | null): Date {
 // SCM implementation
 // ---------------------------------------------------------------------------
 
-// In-process PR cache. Per-method TTLs to balance call reduction against
-// staleness on decision-influencing fields. CI status, mergeability, and full
-// statusCheckRollup are intentionally NOT cached here — those need ETag
-// revalidation (separate change), not blind TTL.
+// In-process PR cache. Per-method TTLs balance call reduction against
+// staleness on decision-influencing fields. Fast-changing decision-critical
+// fields (CI, mergeability, review decision, pending comments) use 5s —
+// well under one poll cycle so the lifecycle worker still sees transitions
+// on its next pass. detectPR caches positive results only (never [])
+// so a freshly created PR is discovered on the very next poll.
 const PR_CACHE_TTL_MS = {
   resolvePR: 60_000, // identity metadata (number, url, title, branch refs, isDraft)
   getPRState: 5_000, // open / merged / closed
   getPRSummary: 5_000, // state + title + additions/deletions
   getReviews: 5_000, // review array (state, body, author)
   getReviewDecision: 5_000, // approved / changes_requested / pending
+  getCIChecks: 5_000, // CI check list (name, state, link, timestamps)
+  getMergeability: 5_000, // composite merge readiness
+  getPendingComments: 5_000, // unresolved review threads (GraphQL)
+  detectPR: 5_000, // positive hits only — see detectPR impl
 } as const;
 
 const PR_CACHE_MAX_ENTRIES = 1000;
@@ -496,11 +502,13 @@ function createGitHubSCM(): SCM {
 
   // Wipe every method's cache entry for a specific PR. Called on writes
   // (pr edit/merge/close) to avoid serving stale state after our own mutation.
+  // Also wipes the branch-keyed detectPR entry since mergePR deletes the branch.
   function invalidatePRCache(pr: PRInfo): void {
     const prefix = `${pr.owner}/${pr.repo}#${pr.number}:`;
     for (const key of prCache.keys()) {
       if (key.startsWith(prefix)) prCache.delete(key);
     }
+    prCache.delete(prCacheKey(pr.owner, pr.repo, pr.branch, "detectPR"));
   }
 
   async function withPRCache<T>(
@@ -584,6 +592,13 @@ function createGitHubSCM(): SCM {
     async detectPR(session: Session, project: ProjectConfig): Promise<PRInfo | null> {
       if (!session.branch || !project.repo) return null;
       parseProjectRepo(project.repo);
+      const [owner, repoName] = project.repo.split("/");
+      // Positive-only cache: never cache [] (null). A just-created PR must
+      // surface on the next poll, so we pay the gh call for misses but save
+      // every call after the PR is discovered.
+      const cacheK = prCacheKey(owner ?? "", repoName ?? "", session.branch, "detectPR");
+      const cached = readPRCache<PRInfo>(cacheK);
+      if (cached !== null) return cached;
       try {
         const raw = await gh([
           "pr",
@@ -609,7 +624,9 @@ function createGitHubSCM(): SCM {
 
         if (prs.length === 0) return null;
 
-        return prInfoFromView(prs[0], project.repo);
+        const info = prInfoFromView(prs[0], project.repo);
+        writePRCache(cacheK, info, PR_CACHE_TTL_MS.detectPR);
+        return info;
       } catch {
         return null;
       }
@@ -733,43 +750,49 @@ function createGitHubSCM(): SCM {
     },
 
     async getCIChecks(pr: PRInfo): Promise<CICheck[]> {
-      try {
-        const raw = await gh([
-          "pr",
-          "checks",
-          String(pr.number),
-          "--repo",
-          repoFlag(pr),
-          "--json",
-          "name,state,link,startedAt,completedAt",
-        ]);
+      // 5s TTL — CI state can flip quickly; within one poll cycle is acceptable
+      // per the agreed fast-changing-fields policy. Fallback to statusCheckRollup
+      // for older gh CLI versions happens inside the fetcher and rides on the
+      // same cache entry.
+      return withPRCache(pr.owner, pr.repo, String(pr.number), "getCIChecks", async () => {
+        try {
+          const raw = await gh([
+            "pr",
+            "checks",
+            String(pr.number),
+            "--repo",
+            repoFlag(pr),
+            "--json",
+            "name,state,link,startedAt,completedAt",
+          ]);
 
-        const checks: Array<{
-          name: string;
-          state: string;
-          link: string;
-          startedAt: string;
-          completedAt: string;
-        }> = JSON.parse(raw);
+          const checks: Array<{
+            name: string;
+            state: string;
+            link: string;
+            startedAt: string;
+            completedAt: string;
+          }> = JSON.parse(raw);
 
-        return checks.map((c) => {
-          const state = c.state?.toUpperCase();
+          return checks.map((c) => {
+            const state = c.state?.toUpperCase();
 
-          return {
-            name: c.name,
-            status: mapRawCheckStateToStatus(state),
-            url: c.link || undefined,
-            conclusion: state || undefined,
-            startedAt: c.startedAt ? new Date(c.startedAt) : undefined,
-            completedAt: c.completedAt ? new Date(c.completedAt) : undefined,
-          };
-        });
-      } catch (err) {
-        if (isUnsupportedPrChecksJsonError(err)) {
-          return getCIChecksFromStatusRollup(pr);
+            return {
+              name: c.name,
+              status: mapRawCheckStateToStatus(state),
+              url: c.link || undefined,
+              conclusion: state || undefined,
+              startedAt: c.startedAt ? new Date(c.startedAt) : undefined,
+              completedAt: c.completedAt ? new Date(c.completedAt) : undefined,
+            };
+          });
+        } catch (err) {
+          if (isUnsupportedPrChecksJsonError(err)) {
+            return getCIChecksFromStatusRollup(pr);
+          }
+          throw new Error("Failed to fetch CI checks", { cause: err });
         }
-        throw new Error("Failed to fetch CI checks", { cause: err });
-      }
+      });
     },
 
     async getCISummary(pr: PRInfo): Promise<CIStatus> {
@@ -871,9 +894,14 @@ function createGitHubSCM(): SCM {
     },
 
     async getPendingComments(pr: PRInfo): Promise<ReviewComment[]> {
-      try {
-        // Use GraphQL with variables to get review threads with actual isResolved status
-        const raw = await gh([
+      // 5s TTL — review threads are decision-influencing (gates whether AO
+      // reacts to new comments). Within one poll cycle is acceptable. Note:
+      // ETag does not work on /graphql per Experiment 2 (G2), so TTL is the
+      // only practical lever here.
+      return withPRCache(pr.owner, pr.repo, String(pr.number), "getPendingComments", async () => {
+        try {
+          // Use GraphQL with variables to get review threads with actual isResolved status
+          const raw = await gh([
           "api",
           "graphql",
           "-f",
@@ -955,9 +983,10 @@ function createGitHubSCM(): SCM {
               url: c.url,
             };
           });
-      } catch (err) {
-        throw new Error("Failed to fetch pending comments", { cause: err });
-      }
+        } catch (err) {
+          throw new Error("Failed to fetch pending comments", { cause: err });
+        }
+      });
     },
 
     async getAutomatedComments(pr: PRInfo): Promise<AutomatedComment[]> {
@@ -1040,86 +1069,92 @@ function createGitHubSCM(): SCM {
     },
 
     async getMergeability(pr: PRInfo): Promise<MergeReadiness> {
-      const blockers: string[] = [];
+      // 5s TTL — composite merge readiness. Internal getPRState/getCISummary
+      // calls are also cached (5s each) so even on cache miss this is cheap.
+      // Cached entry covers the full computed result so duplicate poll-cycle
+      // calls don't re-derive blockers.
+      return withPRCache(pr.owner, pr.repo, String(pr.number), "getMergeability", async () => {
+        const blockers: string[] = [];
 
-      // First, check if the PR is merged
-      // GitHub returns mergeable=null for merged PRs, which is not useful
-      // Note: We only skip checks for merged PRs. Closed PRs still need accurate status.
-      const state = await this.getPRState(pr);
-      if (state === "merged") {
-        // For merged PRs, return a clean result without querying mergeable status
+        // First, check if the PR is merged
+        // GitHub returns mergeable=null for merged PRs, which is not useful
+        // Note: We only skip checks for merged PRs. Closed PRs still need accurate status.
+        const state = await this.getPRState(pr);
+        if (state === "merged") {
+          // For merged PRs, return a clean result without querying mergeable status
+          return {
+            mergeable: true,
+            ciPassing: true,
+            approved: true,
+            noConflicts: true,
+            blockers: [],
+          };
+        }
+
+        // Fetch PR details with merge state
+        const raw = await gh([
+          "pr",
+          "view",
+          String(pr.number),
+          "--repo",
+          repoFlag(pr),
+          "--json",
+          "mergeable,reviewDecision,mergeStateStatus,isDraft",
+        ]);
+
+        const data: {
+          mergeable: string;
+          reviewDecision: string;
+          mergeStateStatus: string;
+          isDraft: boolean;
+        } = JSON.parse(raw);
+
+        // CI
+        const ciStatus = await this.getCISummary(pr);
+        const ciPassing = ciStatus === CI_STATUS.PASSING || ciStatus === CI_STATUS.NONE;
+        if (!ciPassing) {
+          blockers.push(`CI is ${ciStatus}`);
+        }
+
+        // Reviews
+        const reviewDecision = (data.reviewDecision ?? "").toUpperCase();
+        const approved = reviewDecision === "APPROVED";
+        if (reviewDecision === "CHANGES_REQUESTED") {
+          blockers.push("Changes requested in review");
+        } else if (reviewDecision === "REVIEW_REQUIRED") {
+          blockers.push("Review required");
+        }
+
+        // Conflicts / merge state
+        const mergeable = (data.mergeable ?? "").toUpperCase();
+        const mergeState = (data.mergeStateStatus ?? "").toUpperCase();
+        const noConflicts = mergeable === "MERGEABLE";
+        if (mergeable === "CONFLICTING") {
+          blockers.push("Merge conflicts");
+        } else if (mergeable === "UNKNOWN" || mergeable === "") {
+          blockers.push("Merge status unknown (GitHub is computing)");
+        }
+        if (mergeState === "BEHIND") {
+          blockers.push("Branch is behind base branch");
+        } else if (mergeState === "BLOCKED") {
+          blockers.push("Merge is blocked by branch protection");
+        } else if (mergeState === "UNSTABLE") {
+          blockers.push("Required checks are failing");
+        }
+
+        // Draft
+        if (data.isDraft) {
+          blockers.push("PR is still a draft");
+        }
+
         return {
-          mergeable: true,
-          ciPassing: true,
-          approved: true,
-          noConflicts: true,
-          blockers: [],
+          mergeable: blockers.length === 0,
+          ciPassing,
+          approved,
+          noConflicts,
+          blockers,
         };
-      }
-
-      // Fetch PR details with merge state
-      const raw = await gh([
-        "pr",
-        "view",
-        String(pr.number),
-        "--repo",
-        repoFlag(pr),
-        "--json",
-        "mergeable,reviewDecision,mergeStateStatus,isDraft",
-      ]);
-
-      const data: {
-        mergeable: string;
-        reviewDecision: string;
-        mergeStateStatus: string;
-        isDraft: boolean;
-      } = JSON.parse(raw);
-
-      // CI
-      const ciStatus = await this.getCISummary(pr);
-      const ciPassing = ciStatus === CI_STATUS.PASSING || ciStatus === CI_STATUS.NONE;
-      if (!ciPassing) {
-        blockers.push(`CI is ${ciStatus}`);
-      }
-
-      // Reviews
-      const reviewDecision = (data.reviewDecision ?? "").toUpperCase();
-      const approved = reviewDecision === "APPROVED";
-      if (reviewDecision === "CHANGES_REQUESTED") {
-        blockers.push("Changes requested in review");
-      } else if (reviewDecision === "REVIEW_REQUIRED") {
-        blockers.push("Review required");
-      }
-
-      // Conflicts / merge state
-      const mergeable = (data.mergeable ?? "").toUpperCase();
-      const mergeState = (data.mergeStateStatus ?? "").toUpperCase();
-      const noConflicts = mergeable === "MERGEABLE";
-      if (mergeable === "CONFLICTING") {
-        blockers.push("Merge conflicts");
-      } else if (mergeable === "UNKNOWN" || mergeable === "") {
-        blockers.push("Merge status unknown (GitHub is computing)");
-      }
-      if (mergeState === "BEHIND") {
-        blockers.push("Branch is behind base branch");
-      } else if (mergeState === "BLOCKED") {
-        blockers.push("Merge is blocked by branch protection");
-      } else if (mergeState === "UNSTABLE") {
-        blockers.push("Required checks are failing");
-      }
-
-      // Draft
-      if (data.isDraft) {
-        blockers.push("PR is still a draft");
-      }
-
-      return {
-        mergeable: blockers.length === 0,
-        ciPassing,
-        approved,
-        noConflicts,
-        blockers,
-      };
+      });
     },
 
     /**
