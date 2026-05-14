@@ -59,6 +59,7 @@ function createCoreSession(overrides?: Partial<Session>): Session {
     lastActivityAt: new Date("2025-01-01T01:00:00Z"),
     metadata: {},
     ...overrides,
+    prs: overrides?.prs ?? (overrides?.pr ? [overrides.pr] : []),
   };
 }
 
@@ -499,6 +500,7 @@ describe("enrichSessionPR", () => {
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
       pr: null,
+      prs: [],
       metadata: { prEnrichment: createEnrichmentMetadata() },
     };
 
@@ -769,6 +771,7 @@ describe("enrichSessionIssueTitle", () => {
       pr: null,
       metadata: {},
       ...overrides,
+      prs: overrides?.prs ?? (overrides?.pr ? [overrides.pr] : []),
     };
   }
 
@@ -1294,6 +1297,7 @@ describe("computeStats", () => {
       pr: null,
       metadata: {},
       ...overrides,
+      prs: overrides?.prs ?? (overrides?.pr ? [overrides.pr] : []),
     };
   }
 
