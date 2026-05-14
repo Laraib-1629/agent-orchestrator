@@ -1462,6 +1462,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         branch,
         issueId: spawnConfig.issueId ?? null,
         pr: null,
+        prs: [],
         workspacePath,
         runtimeHandle: handle,
         agentInfo: null,
@@ -1945,6 +1946,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       branch,
       issueId: null,
       pr: null,
+      prs: [],
       workspacePath,
       runtimeHandle: handle,
       agentInfo: null,
@@ -3147,6 +3149,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     });
     updateMetadata(sessionsDir, sessionId, {
       pr: pr.url,
+      prs: pr.url,
       status: deriveLegacyStatus(claimLifecycle),
       branch: pr.branch,
       prAutoDetect: "",
