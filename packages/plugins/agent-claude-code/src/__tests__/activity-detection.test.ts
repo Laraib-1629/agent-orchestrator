@@ -39,6 +39,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     branch: "main",
     issueId: null,
     pr: null,
+    prs: [],
     workspacePath,
     runtimeHandle: handle,
     agentInfo: null,
