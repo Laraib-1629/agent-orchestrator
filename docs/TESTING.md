@@ -21,16 +21,20 @@ Replace the filter value with any package name from `packages/`.
 ## Watch mode
 
 ```bash
+pnpm --filter @aoagents/ao-core test:watch
 pnpm --filter @aoagents/ao-web test:watch
 ```
+
+> `test:watch` is only available in packages that declare it (e.g. `ao-core`, `ao-web`). Plugin packages use `vitest run` and do not expose a watch script.
 
 ## Integration tests
 
 ```bash
+pnpm build
 pnpm test:integration
 ```
 
-Runs end-to-end tests from `packages/integration-tests/`. Requires a built workspace (`pnpm build` first).
+Requires a built workspace **and** system-level dependencies on `PATH`: `tmux`, `gh`, and any agent CLIs you intend to test (e.g. `claude`). Missing binaries cause obscure failures rather than clear errors.
 
 ## Before pushing
 
